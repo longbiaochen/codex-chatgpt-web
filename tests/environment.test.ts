@@ -3,7 +3,7 @@ import { Database } from "bun:sqlite";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join, resolve, toNamespacedPath } from "node:path";
-import { extractChatGptTurnEnvironment, extractChatGptTurnIdentity } from "../src/adapters/chatgpt-web/environment";
+import { extractChatGptTurnEnvironment, extractChatGptTurnIdentity, type ChatGptTurnEnvironment } from "../src/adapters/chatgpt-web/environment";
 import { rememberCompactionContinuation } from "../src/adapters/chatgpt-web/compaction-continuation";
 import { encodeCompactionSummary, SUMMARY_PREFIX } from "../src/responses/compaction";
 import { ChatGptThreadEnvironmentStore } from "../src/adapters/chatgpt-web/thread-environment";
@@ -616,6 +616,46 @@ describe("trusted Codex task environment continuity", () => {
     const invalidUpdate = currentWire({ sandbox: "read-only" });
     invalidUpdate.context.systemPrompt = [`<environment_context><cwd>${root}</cwd></environment_context>`];
     expect(() => store.resolve(invalidUpdate)).toThrow("missing cwd");
+  });
+
+  test("reuses same-thread authority when envelopes belong only to earlier turns", () => {
+    // A bridge on another host cannot read the native rollout, so a later turn whose only
+    // environment XML is historical must fall back to the thread's cached trusted authority.
+    const followUp = (threadId: string, tagged: boolean): CodexParsedRequest => {
+      const request = currentWire({ threadId });
+      request._rawBody = {
+        client_metadata: {
+          "x-codex-turn-metadata": JSON.stringify({ thread_id: threadId, turn_id: "turn_next" }),
+        },
+        input: [
+          {
+            type: "message",
+            role: "user",
+            ...(tagged ? { internal_chat_message_metadata_passthrough: { turn_id: "turn_current" } } : {}),
+            content: [{ type: "input_text", text: environmentXml }],
+          },
+          { type: "message", role: "user", content: [{ type: "input_text", text: "Inspect the workspace" }] },
+          { type: "message", role: "assistant", content: [{ type: "output_text", text: "Done." }] },
+          { type: "message", role: "user", content: [{ type: "input_text", text: "Now add type hints" }] },
+        ],
+      };
+      return request;
+    };
+    const cached: ChatGptTurnEnvironment = {
+      cwd: root,
+      roots: [root],
+      writableRoots: [root],
+      sandboxPolicy: { type: "dangerFullAccess" },
+      tools: [],
+    };
+
+    for (const tagged of [true, false]) {
+      const store = new ChatGptThreadEnvironmentStore();
+      expect(() => store.resolve(followUp("thread_current", tagged))).toThrow("missing cwd");
+      store.resolve(currentWire());
+      expect(store.resolve(followUp("thread_current", tagged))).toEqual(cached);
+      expect(() => store.resolve(followUp("thread_unrelated", tagged))).toThrow("missing cwd");
+    }
   });
 
   test("inherits authority only through canonical Codex thread-spawn lineage", () => {
