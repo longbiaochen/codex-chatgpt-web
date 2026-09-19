@@ -2641,8 +2641,8 @@ export class ChatGptBrowserWorker {
    * external progress or a short backoff instead of tearing down the CDP transport. The page itself
    * is not touched, so no further evaluates pile up in a busy renderer.
    */
-  private async waitForLiveExternalProgress(
-    externalProgress: ChatGptTurnProgressReader,
+  private async waitForLiveProbeRetry(
+    externalProgress: ChatGptTurnProgressReader | undefined,
     afterProgressRevision: number,
     attempt: number,
     signal?: AbortSignal,
@@ -2652,7 +2652,9 @@ export class ChatGptBrowserWorker {
     const waitSignal = signal ? AbortSignal.any([waitAbort.signal, signal]) : waitAbort.signal;
     try {
       await withBrowserTurnAbort(Promise.race([
-        externalProgress.waitForChange(afterProgressRevision, waitSignal).then(() => undefined, () => undefined),
+        ...(externalProgress
+          ? [externalProgress.waitForChange(afterProgressRevision, waitSignal).then(() => undefined, () => undefined)]
+          : []),
         new Promise<void>(resolveDelay => setTimeout(resolveDelay, delay)),
       ]), signal);
     } finally {
@@ -2887,6 +2889,7 @@ export class ChatGptBrowserWorker {
     let observationBaseline = baseline;
     let recoveryAttempts = 0;
     let liveProbeWaits = 0;
+    const observingSince = Date.now();
     let responseDeadline = Math.min(
       deadline ?? Number.POSITIVE_INFINITY,
       Date.now() + graceMs,
@@ -2915,14 +2918,19 @@ export class ChatGptBrowserWorker {
         );
       } catch (error) {
         const latestProgress = externalProgress?.snapshot();
+        // ChatGPT already proved this submission is running. Right after acceptance the page is often
+        // busy rendering the (possibly very large) prompt, so a stalled probe inside the DOM grace
+        // window is treated like live broker activity: wait and re-probe rather than rebind.
+        const recentlyAccepted = Date.now() - observingSince < graceMs;
         if (error instanceof ChatGptBrowserObservationTimeoutError
-          && externalProgress
-          && chatGptExternalProgressSuppressesDomHealth(latestProgress, Date.now())) {
+          && (recentlyAccepted
+            || (externalProgress && chatGptExternalProgressSuppressesDomHealth(latestProgress, Date.now())))) {
           console.warn(
-            `[chatgpt-web] submission DOM probe timed out while broker activity is live; waiting instead of rebinding`
+            `[chatgpt-web] submission DOM probe timed out while the turn is live`
+            + ` (${recentlyAccepted ? "recently accepted" : "broker activity"}); waiting instead of rebinding`
             + ` (attempt ${liveProbeWaits + 1})`,
           );
-          await this.waitForLiveExternalProgress(externalProgress, latestProgress?.revision ?? 0, liveProbeWaits, signal);
+          await this.waitForLiveProbeRetry(externalProgress, latestProgress?.revision ?? 0, liveProbeWaits, signal);
           liveProbeWaits += 1;
           continue;
         }
@@ -5046,7 +5054,7 @@ export class ChatGptBrowserWorker {
                 `[chatgpt-web] browser turn ${turn.traceId} response DOM probe timed out while broker activity is live;`
                 + ` waiting instead of rebinding (attempt ${consecutiveLiveProbeWaits + 1})`,
               );
-              await this.waitForLiveExternalProgress(
+              await this.waitForLiveProbeRetry(
                 turn.externalProgress,
                 liveProgress?.revision ?? 0,
                 consecutiveLiveProbeWaits,
