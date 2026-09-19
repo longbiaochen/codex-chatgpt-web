@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createContext, runInContext } from "node:vm";
 import type { Page } from "playwright-core";
-import { CHATGPT_BROWSER_OBSERVATION_PROBE_TIMEOUT_MS, CHATGPT_COMPLETION_SETTLE_MS, CHATGPT_EXTERNAL_PROGRESS_CLOCK_SKEW_MS, CHATGPT_EXTERNAL_PROGRESS_STALL_CEILING_MS, ChatGptCompletionTracker, chatGptExternalProgressSuppressesDomHealth, CHATGPT_RESPONSE_DOM_GRACE_MS, MAX_CHATGPT_INTERNAL_OBSERVATION_FAULTS, CHATGPT_COMPOSER_DOCUMENT_END_KEY, CHATGPT_COMPOSER_SELECT_ALL_KEY, ChatGptBrowserObservationTimeoutError, ChatGptBrowserWorker, ChatGptPromptAttachmentIntegrityError, ChatGptTurnDomHealthTracker, ChatGptVisibleTraceTracker, MAX_CHATGPT_BROWSER_PAGE_REBINDS, MAX_CHATGPT_BROWSER_TABS, MAX_CHATGPT_CONNECTOR_TRIGGER_ATTEMPTS, assertChatGptWebInputWithinLimits, assertChatGptWebMultipartInputWithinLimits, browserDiagnosticCheckpoint, chatGptConnectorAttachmentMode, chatGptNewTurnIdentity, chatGptReboundTurnIdentity, chatGptSubmissionEvidence, connectAfterClosingBrowserConnection, dismissChatGptTemporaryChatOnboarding, isChatGptTraceControl, redactChatGptUiDiagnostic, resolveBrowserConfig, resolveChatGptToolConfirmation, resolveChatGptWebMultipartStagingMode, sanitizeChatGptBrowserDiagnosticState, setChatGptThinkMode, stripChatGptTraceControlSuffix, throwIfChatGptRateLimitDialog, throwIfChatGptSessionFailureAlert, throwIfChatGptTerminalErrorAlert, withChatGptBrowserObservationTimeout, CHATGPT_MULTIPART_RESPONSE_DOM_GRACE_MS, browserStageTimeouts, ChatGptSuspensionClock, remainingStageBudgetMs } from "../src/adapters/chatgpt-web/browser-worker";
+import { CHATGPT_BROWSER_OBSERVATION_PROBE_TIMEOUT_MS, CHATGPT_COMPLETION_SETTLE_MS, CHATGPT_EXTERNAL_PROGRESS_CLOCK_SKEW_MS, CHATGPT_EXTERNAL_PROGRESS_STALL_CEILING_MS, ChatGptCompletionTracker, chatGptExternalProgressSuppressesDomHealth, CHATGPT_RESPONSE_DOM_GRACE_MS, MAX_CHATGPT_INTERNAL_OBSERVATION_FAULTS, CHATGPT_COMPOSER_DOCUMENT_END_KEY, CHATGPT_COMPOSER_SELECT_ALL_KEY, ChatGptBrowserObservationTimeoutError, ChatGptBrowserWorker, ChatGptPromptAttachmentIntegrityError, ChatGptTurnDomHealthTracker, ChatGptVisibleTraceTracker, MAX_CHATGPT_BROWSER_PAGE_REBINDS, MAX_CHATGPT_PAGE_REBIND_CONNECT_ATTEMPTS, isRetryableChatGptPageRebindFailure, retryTimedOutChatGptPageRebind, MAX_CHATGPT_BROWSER_TABS, MAX_CHATGPT_CONNECTOR_TRIGGER_ATTEMPTS, assertChatGptWebInputWithinLimits, assertChatGptWebMultipartInputWithinLimits, browserDiagnosticCheckpoint, chatGptConnectorAttachmentMode, chatGptNewTurnIdentity, chatGptReboundTurnIdentity, chatGptSubmissionEvidence, connectAfterClosingBrowserConnection, dismissChatGptTemporaryChatOnboarding, isChatGptTraceControl, redactChatGptUiDiagnostic, resolveBrowserConfig, resolveChatGptToolConfirmation, resolveChatGptWebMultipartStagingMode, sanitizeChatGptBrowserDiagnosticState, setChatGptThinkMode, stripChatGptTraceControlSuffix, throwIfChatGptRateLimitDialog, throwIfChatGptSessionFailureAlert, throwIfChatGptTerminalErrorAlert, withChatGptBrowserObservationTimeout, CHATGPT_MULTIPART_RESPONSE_DOM_GRACE_MS, browserStageTimeouts, ChatGptSuspensionClock, remainingStageBudgetMs } from "../src/adapters/chatgpt-web/browser-worker";
 import { ensureChatGptPersonalizedConnectorAccess, chatGptUnavailableProDetail } from "../src/adapters/chatgpt-web/browser-worker";
 import { chatGptStoppedThinkingError } from "../src/adapters/chatgpt-web/adapter-error";
 import { CHATGPT_STOPPED_THINKING_LABELS } from "../src/adapters/chatgpt-web/ui-labels";
@@ -1008,6 +1008,57 @@ test("a failed stale-browser disconnect prevents the replacement connection", as
   )).rejects.toBe(disconnectFailure);
 
   expect(replacementAttempts).toBe(0);
+});
+
+test("a timed-out same-page rebind is retried once after cleanup, then succeeds", async () => {
+  const attempts: number[] = [];
+  const retries: Array<{ message: string; retry: number }> = [];
+  const result = await retryTimedOutChatGptPageRebind(async (retry) => {
+    attempts.push(retry);
+    if (retry === 0) throw new Error("ChatGPT browser stage timed out: response_page_rebind_1");
+    return "rebound";
+  }, { onRetry: (error, retry) => { retries.push({ message: error.message, retry }); } });
+
+  expect(result).toBe("rebound");
+  expect(attempts).toEqual([0, 1]);
+  expect(retries).toEqual([{ message: "ChatGPT browser stage timed out: response_page_rebind_1", retry: 1 }]);
+});
+
+test("a launcher CDP connection timeout is retryable, but other rebind failures stay terminal", async () => {
+  expect(isRetryableChatGptPageRebindFailure(new Error(
+    "Could not connect Playwright to the launcher browser: browserType.connectOverCDP: Timeout 60000ms exceeded.",
+  ))).toBe(true);
+  expect(isRetryableChatGptPageRebindFailure(new Error("ChatGPT browser stage timed out: send"))).toBe(false);
+  expect(isRetryableChatGptPageRebindFailure(new Error(
+    "ChatGPT browser surface did not expose an operational viewport: closed",
+  ))).toBe(false);
+
+  const terminal = new Error("Launcher browser host exposed 2 surfaces with the same ownership id");
+  let attempts = 0;
+  await expect(retryTimedOutChatGptPageRebind(async () => {
+    attempts += 1;
+    throw terminal;
+  }, { onRetry: () => { throw new Error("must not retry"); } })).rejects.toBe(terminal);
+  expect(attempts).toBe(1);
+});
+
+test("a same-page rebind retry is bounded and never outlives an aborted turn", async () => {
+  let attempts = 0;
+  await expect(retryTimedOutChatGptPageRebind(async () => {
+    attempts += 1;
+    throw new Error("ChatGPT browser stage timed out: response_page_rebind_2");
+  }, { onRetry: () => {} })).rejects.toThrow("response_page_rebind_2");
+  expect(attempts).toBe(MAX_CHATGPT_PAGE_REBIND_CONNECT_ATTEMPTS);
+
+  const controller = new AbortController();
+  controller.abort();
+  attempts = 0;
+  await expect(retryTimedOutChatGptPageRebind(async () => {
+    attempts += 1;
+    throw new Error("ChatGPT browser stage timed out: response_page_rebind_1");
+  }, { signal: controller.signal, onRetry: () => { throw new Error("must not retry"); } }))
+    .rejects.toThrow("response_page_rebind_1");
+  expect(attempts).toBe(1);
 });
 
 test("closing the launcher page is an immediate terminal turn error", async () => {

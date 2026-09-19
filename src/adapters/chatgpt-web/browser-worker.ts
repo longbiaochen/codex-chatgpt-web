@@ -1100,6 +1100,41 @@ export function remainingStageBudgetMs(
 
 export const CHATGPT_BROWSER_OBSERVATION_PROBE_TIMEOUT_MS = 5_000;
 export const MAX_CHATGPT_BROWSER_PAGE_REBINDS = 2;
+/** Connection attempts for one same-page rebind; a stalled page often recovers within a minute. */
+export const MAX_CHATGPT_PAGE_REBIND_CONNECT_ATTEMPTS = 2;
+
+/** Only a rebind that ran out of time may be retried; every other failure stays terminal. */
+export function isRetryableChatGptPageRebindFailure(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.startsWith("ChatGPT browser stage timed out: response_page_rebind_")
+    || message.startsWith("Could not connect Playwright to the launcher browser:");
+}
+
+/**
+ * Retry a timed-out same-page rebind before failing an accepted turn. ChatGPT can keep a busy
+ * renderer unresponsive longer than one connection budget while the turn itself is still running,
+ * so one more bounded attempt is made after the previous attempt has fully settled.
+ */
+export async function retryTimedOutChatGptPageRebind<T>(
+  connect: (retry: number) => Promise<T>,
+  options: {
+    onRetry: (error: Error, retry: number) => Promise<void> | void;
+    signal?: AbortSignal;
+    maxAttempts?: number;
+  },
+): Promise<T> {
+  const maxAttempts = options.maxAttempts ?? MAX_CHATGPT_PAGE_REBIND_CONNECT_ATTEMPTS;
+  for (let retry = 0; ; retry += 1) {
+    try {
+      return await connect(retry);
+    } catch (error) {
+      if (retry + 1 >= maxAttempts || options.signal?.aborted || !isRetryableChatGptPageRebindFailure(error)) {
+        throw error;
+      }
+      await options.onRetry(error as Error, retry + 1);
+    }
+  }
+}
 
 export class ChatGptBrowserObservationTimeoutError extends Error {
   constructor(timeoutMs: number) {
@@ -4498,9 +4533,9 @@ export class ChatGptBrowserWorker {
           previousConnection,
           () => {
             turnConnection = undefined;
-            return this.runStage(
+            return retryTimedOutChatGptPageRebind((retry) => this.runStage(
               turn.traceId,
-              `response_page_rebind_${attempt}`,
+              retry === 0 ? `response_page_rebind_${attempt}` : `response_page_rebind_${attempt}_retry_${retry}`,
               browserStageTimeouts.browserPage,
               async (stageSignal) => {
                 const signal = callerSignal
@@ -4527,7 +4562,22 @@ export class ChatGptBrowserWorker {
                 await waitForOperationalChatGptViewport(rebound.page, signal);
                 return rebound;
               },
-            );
+              chatGptSuspensionClock,
+              // Let a timed-out connection attempt settle (and release its transport) before a retry,
+              // so two CDP connections never contend for the same stalled page.
+              true,
+            ), {
+              signal: callerSignal ?? turn.abortSignal,
+              onRetry: async (error, retry) => {
+                console.warn(
+                  `[chatgpt-web] browser turn ${turn.traceId} is retrying its same-page rebind (attempt ${retry + 1}`
+                  + ` of ${MAX_CHATGPT_PAGE_REBIND_CONNECT_ATTEMPTS}) after: ${redactChatGptUiDiagnostic(error.message)}`,
+                );
+                const stale = turnConnection;
+                turnConnection = undefined;
+                if (stale) await stale.close().catch(() => {});
+              },
+            });
           },
         );
         turnConnection = connection.browser;
