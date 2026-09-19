@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { dirname, join, resolve, toNamespacedPath } from "node:path";
+import { dirname, join, resolve, sep, toNamespacedPath } from "node:path";
 import { extractChatGptTurnEnvironment, extractChatGptTurnIdentity, type ChatGptTurnEnvironment } from "../src/adapters/chatgpt-web/environment";
 import { rememberCompactionContinuation } from "../src/adapters/chatgpt-web/compaction-continuation";
 import { encodeCompactionSummary, SUMMARY_PREFIX } from "../src/responses/compaction";
@@ -321,6 +321,102 @@ describe("trusted current Codex environment envelope", () => {
       sandboxPolicy: { type: "dangerFullAccess" },
       tools: [],
     });
+  });
+
+  test("a remote bridge accepts the client's .codex visualization root for the current task", () => {
+    // The bridge runs on another host: the client's Codex home differs from this CODEX_HOME.
+    const visualizationRoot = join(sep, "Users", "remote-user", ".codex", "visualizations", "2026", "08", "25", "thread_current");
+    const projectEnvironment = `<environment_context>
+  <cwd>${root}</cwd>
+  <filesystem><workspace_roots><root>${root}</root><root>${visualizationRoot}</root></workspace_roots>${dangerFullAccessProfileXml}</filesystem>
+</environment_context>`;
+    const request = currentWire({ environmentXml: projectEnvironment });
+    const body = request._rawBody as { input: Array<Record<string, unknown>> };
+    for (const item of body.input) {
+      item.internal_chat_message_metadata_passthrough = { turn_id: "turn_current" };
+    }
+    body.input.splice(1, 0, {
+      type: "message",
+      id: "msg_developer",
+      role: "developer",
+      content: [{ type: "input_text", text: "Current Codex Desktop developer context." }],
+      internal_chat_message_metadata_passthrough: { turn_id: "turn_current" },
+    });
+    body.input.push({
+      type: "message",
+      id: "msg_skill",
+      role: "user",
+      content: [{ type: "input_text", text: "<skill name=\"autopilot\">Use this skill.</skill>" }],
+      internal_chat_message_metadata_passthrough: { turn_id: "turn_current" },
+    });
+
+    expect(extractChatGptTurnEnvironment(request)).toEqual({
+      cwd: root,
+      roots: [root, visualizationRoot],
+      writableRoots: [root, visualizationRoot],
+      sandboxPolicy: { type: "dangerFullAccess" },
+      tools: [],
+    });
+  });
+
+  test("a remote bridge rejects the client's .codex visualization root of another task", () => {
+    // The bridge runs on another host: the client's Codex home differs from this CODEX_HOME.
+    const visualizationRoot = join(sep, "Users", "remote-user", ".codex", "visualizations", "2026", "08", "25", "thread_other");
+    const projectEnvironment = `<environment_context>
+  <cwd>${root}</cwd>
+  <filesystem><workspace_roots><root>${root}</root><root>${visualizationRoot}</root></workspace_roots>${dangerFullAccessProfileXml}</filesystem>
+</environment_context>`;
+    const request = currentWire({ environmentXml: projectEnvironment });
+    const body = request._rawBody as { input: Array<Record<string, unknown>> };
+    for (const item of body.input) {
+      item.internal_chat_message_metadata_passthrough = { turn_id: "turn_current" };
+    }
+    body.input.splice(1, 0, {
+      type: "message",
+      id: "msg_developer",
+      role: "developer",
+      content: [{ type: "input_text", text: "Current Codex Desktop developer context." }],
+      internal_chat_message_metadata_passthrough: { turn_id: "turn_current" },
+    });
+    body.input.push({
+      type: "message",
+      id: "msg_skill",
+      role: "user",
+      content: [{ type: "input_text", text: "<skill name=\"autopilot\">Use this skill.</skill>" }],
+      internal_chat_message_metadata_passthrough: { turn_id: "turn_current" },
+    });
+
+    expect(() => extractChatGptTurnEnvironment(request)).toThrow("missing cwd");
+  });
+
+  test("a remote bridge rejects a visualization-shaped root outside a .codex home", () => {
+    // The bridge runs on another host: the client's Codex home differs from this CODEX_HOME.
+    const visualizationRoot = join(sep, "tmp", "untrusted", "visualizations", "2026", "08", "25", "thread_current");
+    const projectEnvironment = `<environment_context>
+  <cwd>${root}</cwd>
+  <filesystem><workspace_roots><root>${root}</root><root>${visualizationRoot}</root></workspace_roots>${dangerFullAccessProfileXml}</filesystem>
+</environment_context>`;
+    const request = currentWire({ environmentXml: projectEnvironment });
+    const body = request._rawBody as { input: Array<Record<string, unknown>> };
+    for (const item of body.input) {
+      item.internal_chat_message_metadata_passthrough = { turn_id: "turn_current" };
+    }
+    body.input.splice(1, 0, {
+      type: "message",
+      id: "msg_developer",
+      role: "developer",
+      content: [{ type: "input_text", text: "Current Codex Desktop developer context." }],
+      internal_chat_message_metadata_passthrough: { turn_id: "turn_current" },
+    });
+    body.input.push({
+      type: "message",
+      id: "msg_skill",
+      role: "user",
+      content: [{ type: "input_text", text: "<skill name=\"autopilot\">Use this skill.</skill>" }],
+      internal_chat_message_metadata_passthrough: { turn_id: "turn_current" },
+    });
+
+    expect(() => extractChatGptTurnEnvironment(request)).toThrow("missing cwd");
   });
 
   test("steering accepts a spawned task's parent visualization root", () => {
