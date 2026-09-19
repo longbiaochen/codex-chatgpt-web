@@ -487,16 +487,25 @@ function isCurrentOrParentThreadVisualizationRoot(path: string, metadata: Record
   // Codex home and current or parent thread id; arbitrary roots and unrelated output remain untrusted.
   const configuredCodexHome = process.env.CODEX_HOME?.trim();
   const codexHome = resolve(configuredCodexHome || join(homedir(), ".codex"));
-  const visualizationBase = pathIdentity(join(codexHome, "visualizations"));
-  const rel = relative(visualizationBase, pathIdentity(path));
-  if (!rel || rel.startsWith("..") || isAbsolute(rel)) return false;
+  const target = pathIdentity(path);
+  const bases = [pathIdentity(join(codexHome, "visualizations"))];
+  // A bridge on another host than Codex cannot see the client's Codex home, so its own CODEX_HOME
+  // never matches the advertised root. Codex's default home is `<user home>/.codex`; accept that
+  // client-side shape too. The date layout and the current/parent thread id are still required.
+  const marker = `${sep}.codex${sep}visualizations${sep}`;
+  const markerAt = target.lastIndexOf(marker);
+  if (markerAt >= 0) bases.push(target.slice(0, markerAt + marker.length - 1));
 
-  const parts = rel.split(sep);
-  return parts.length === 4
-    && /^\d{4}$/.test(parts[0]!)
-    && /^(?:0[1-9]|1[0-2])$/.test(parts[1]!)
-    && /^(?:0[1-9]|[12]\d|3[01])$/.test(parts[2]!)
-    && threadIds.includes(parts[3]!);
+  return bases.some(base => {
+    const rel = relative(base, target);
+    if (!rel || rel.startsWith("..") || isAbsolute(rel)) return false;
+    const parts = rel.split(sep);
+    return parts.length === 4
+      && /^\d{4}$/.test(parts[0]!)
+      && /^(?:0[1-9]|1[0-2])$/.test(parts[1]!)
+      && /^(?:0[1-9]|[12]\d|3[01])$/.test(parts[2]!)
+      && threadIds.includes(parts[3]!);
+  });
 }
 
 function canonicalMetadataEnvironmentBeforeUser(
