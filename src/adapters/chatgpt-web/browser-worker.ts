@@ -1303,6 +1303,7 @@ export interface ResolvedBrowserConfig {
   browserHost: "managed-chrome" | "launcher";
   browserHostDescriptorPath?: string;
   browserHostPool?: string[];
+  browserHostAppNames?: Record<string, string>;
   browserHelperScriptPath?: string;
   browserDiagnosticsPath?: string;
   storageStatePath: string;
@@ -2051,6 +2052,12 @@ export function resolveBrowserConfig(provider: CodexProviderConfig): ResolvedBro
     ...(browserHostDescriptorPath ? { browserHostDescriptorPath: resolve(expandUserPath(browserHostDescriptorPath)) } : {}),
     ...(browserHost === "launcher" && configured.browserHostPool?.length
       ? { browserHostPool: configured.browserHostPool.map(host => resolve(expandUserPath(host.trim()))) }
+      : {}),
+    ...(browserHost === "launcher" && configured.browserHostAppNames
+      ? {
+        browserHostAppNames: Object.fromEntries(Object.entries(configured.browserHostAppNames)
+          .map(([host, name]) => [resolve(expandUserPath(host.trim())), name.trim()])),
+      }
       : {}),
     ...(resolvedBrowserHelperScriptPath ? { browserHelperScriptPath: resolvedBrowserHelperScriptPath } : {}),
     browserDiagnosticsPath,

@@ -78,6 +78,7 @@ export interface AppConfig {
   browserInteractionMode: BrowserInteractionMode;
   browserHostDescriptorPath?: string;
   browserHostPool?: string[];
+  browserHostAppNames?: Record<string, string>;
   chromeExecutablePath: string;
   storageStatePath: string;
   brokerSocketPath: string;
@@ -441,6 +442,14 @@ function parseConfig(value: unknown, path: string): AppConfig {
       throw new Error(`browserHostPool must list absolute launcher descriptor paths in ${path}`);
     }
   }
+  if (parsed.browserHostAppNames !== undefined) {
+    const names = parsed.browserHostAppNames;
+    if (!names || typeof names !== "object" || Array.isArray(names)
+      || Object.entries(names).some(([host, name]) => !isAbsolute(expandUserPath(host))
+        || typeof name !== "string" || !name.trim() || name.length > 80)) {
+      throw new Error(`browserHostAppNames must map launcher descriptor paths to connector names in ${path}`);
+    }
+  }
   const brokerEndpoint = expandUserPath(parsed.brokerSocketPath!);
   if (process.platform === "win32") {
     if (!isWindowsPipeEndpoint(brokerEndpoint)) {
@@ -588,6 +597,7 @@ export function providerConfig(config: AppConfig): CodexProviderConfig {
       browserHost: config.browserHost,
       browserHostDescriptorPath: config.browserHostDescriptorPath,
       ...(config.browserHostPool?.length ? { browserHostPool: config.browserHostPool } : {}),
+      ...(config.browserHostAppNames ? { browserHostAppNames: config.browserHostAppNames } : {}),
       storageStatePath: config.storageStatePath,
       chromeExecutablePath: config.chromeExecutablePath,
       brokerSocketPath: config.brokerSocketPath,

@@ -285,7 +285,9 @@ export class LauncherBrowserHelperClient {
           type: "run",
           id: turn.traceId,
           config: {
-            appName: this.config.appName,
+            // Each launcher host can have its own connector (and therefore its own tunnel), so a
+            // long tool call in one browser does not queue the tool calls of turns in another.
+            appName: (pending.host && this.config.browserHostAppNames?.[pending.host]) || this.config.appName,
             browserHostDescriptorPath: pending.host ?? this.config.browserHostDescriptorPath!,
             browserDiagnosticsPath: this.config.browserDiagnosticsPath,
             turnTimeoutMs: this.config.turnTimeoutMs,

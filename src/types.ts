@@ -272,6 +272,8 @@ export interface CodexProviderConfig {
     browserHostDescriptorPath?: string;
     /** Extra launcher browser hosts (descriptor paths) that share this bridge's broker and connector. */
     browserHostPool?: string[];
+    /** Connector (appName) per pool host, so each browser's tool calls use its own tunnel. */
+    browserHostAppNames?: Record<string, string>;
     /** Explicit browser-helper bundle. DEV builds current source; the launcher still supplies Electron-as-Node. */
     browserHelperScriptPath?: string;
     /** Explicit private diagnostic root for isolated harnesses. */
