@@ -251,6 +251,37 @@ export async function selectLauncherPage(
   throw new Error("Launcher browser host did not expose its owned browser surface");
 }
 
+/**
+ * Diagnostic only: per-renderer CPU share over ~1 s, read from the browser process so that a busy
+ * or paused renderer cannot block the measurement itself.
+ */
+export async function sampleLauncherRendererCpu(browser: Pick<Browser, "newBrowserCDPSession"> | undefined): Promise<string> {
+  if (!browser) return "no-connection";
+  const within = <T>(promise: Promise<T>, ms: number) => Promise.race([
+    promise,
+    new Promise<never>((_, reject) => setTimeout(() => reject(new Error(`timed out after ${ms}ms`)), ms)),
+  ]);
+  try {
+    const session = await within(browser.newBrowserCDPSession(), 2_000);
+    try {
+      type ProcessInfo = { processInfo: Array<{ type: string; id: number; cpuTime: number }> };
+      const read = async () => (await within(session.send("SystemInfo.getProcessInfo") as Promise<ProcessInfo>, 2_000))
+        .processInfo.filter(item => item.type === "renderer");
+      const before = await read();
+      await new Promise(resolve => setTimeout(resolve, 1_000));
+      const after = await read();
+      return after.map(item => {
+        const previous = before.find(candidate => candidate.id === item.id);
+        return `${item.id}:${previous ? Math.round((item.cpuTime - previous.cpuTime) * 100) : "new"}%`;
+      }).join(",") || "no-renderers";
+    } finally {
+      await session.detach().catch(() => {});
+    }
+  } catch (error) {
+    return `unavailable(${error instanceof Error ? error.message : String(error)})`;
+  }
+}
+
 export async function connectLauncherBrowserHost(
   descriptorPath: string,
   timeoutMs = 20_000,
@@ -261,13 +292,18 @@ export async function connectLauncherBrowserHost(
     throw new DOMException("Launcher browser connection aborted", "AbortError");
   }
   const descriptor = readLauncherBrowserHostDescriptor(descriptorPath);
+  const startedAt = performance.now();
   await assertCdpReady(descriptor, Math.min(timeoutMs, 5_000));
+  const readyAt = performance.now();
   let browser: Browser;
   try {
     browser = await chromium.connectOverCDP(descriptor.endpoint, { timeout: timeoutMs });
   } catch (error) {
+    console.info(`[chatgpt-web] launcher connect timing surface=${surfaceId ?? "-"} readyMs=${Math.round(readyAt - startedAt)}`
+      + ` cdpMs=${Math.round(performance.now() - readyAt)} result=cdp-failed`);
     throw new Error(`Could not connect Playwright to the launcher browser: ${error instanceof Error ? error.message : String(error)}`);
   }
+  const connectedAt = performance.now();
   const closeOnAbort = () => { void browser.close().catch(() => {}); };
   abortSignal?.addEventListener("abort", closeOnAbort, { once: true });
   try {
@@ -281,6 +317,9 @@ export async function connectLauncherBrowserHost(
       surfaceId,
       abortSignal,
     );
+    console.info(`[chatgpt-web] launcher connect timing surface=${surfaceId ?? "-"} readyMs=${Math.round(readyAt - startedAt)}`
+      + ` cdpMs=${Math.round(connectedAt - readyAt)} selectMs=${Math.round(performance.now() - connectedAt)}`
+      + ` pages=${browser.contexts().reduce((count, item) => count + item.pages().length, 0)} result=ok`);
     return { descriptor, browser, context, page };
   } catch (error) {
     await browser.close().catch(() => {});

@@ -64,6 +64,7 @@ import {
 import { loginVerificationMarkerPath } from "../../browser-login";
 import {
   connectLauncherBrowserHost,
+  sampleLauncherRendererCpu,
   LauncherBrowserTurnCancelledError,
   LauncherRetainedConversationUnavailableError,
   LAUNCHER_TURN_HEARTBEAT_INTERVAL_MS,
@@ -4417,6 +4418,7 @@ export class ChatGptBrowserWorker {
       this.config.appName,
     );
     let turnConnection: Browser | undefined;
+    let pageStateStopped = true;
     let managedPage: Page | undefined;
     let diagnosticPage: Page | undefined;
     try {
@@ -4514,6 +4516,30 @@ export class ChatGptBrowserWorker {
       });
       if (!maintenancePage && !launcherSurfaceId) managedPage = page;
       diagnosticPage = page;
+      // Diagnostic only: log page visibility/viewport transitions and probe stalls every ~2 s.
+      pageStateStopped = !launcherSurfaceId;
+      let lastPageState = "";
+      const samplePageState = async () => {
+        while (!pageStateStopped) {
+          let state: string;
+          try {
+            const observed = await Promise.race([
+              page.evaluate(() => `visibility=${document.visibilityState} viewport=${innerWidth}x${innerHeight}`
+                + ` focus=${document.hasFocus()}`),
+              new Promise<string>(resolveState => setTimeout(() => resolveState("probe-timeout-1500ms"), 1_500)),
+            ]);
+            state = observed;
+          } catch (error) {
+            state = `probe-error(${error instanceof Error ? error.message.slice(0, 80) : String(error)})`;
+          }
+          if (state !== lastPageState) {
+            console.info(`[chatgpt-web] browser turn ${turn.traceId} page state ${state}`);
+            lastPageState = state;
+          }
+          await new Promise(resolveSleep => setTimeout(resolveSleep, 2_000));
+        }
+      };
+      void samplePageState();
       const rebindLauncherPage = async (
         attempt: number,
         cause: Error,
@@ -4525,6 +4551,9 @@ export class ChatGptBrowserWorker {
           + ` ${redactChatGptUiDiagnostic(cause.message)}`,
         );
         const previousConnection = turnConnection;
+        console.warn(
+          `[chatgpt-web] browser turn ${turn.traceId} renderer cpu before rebind: ${await sampleLauncherRendererCpu(previousConnection)}`,
+        );
         // The observation timeout races the Playwright operation but cannot cancel the underlying
         // page.evaluate by itself. A failed disconnect is terminal: opening a replacement while
         // the stale probe still owns its transport would recreate the contention this rebind is
@@ -5181,6 +5210,7 @@ export class ChatGptBrowserWorker {
       }
       throw error;
     } finally {
+      pageStateStopped = true;
       prepared.release();
       if (turnConnection) {
         await turnConnection.close().catch(error => {
