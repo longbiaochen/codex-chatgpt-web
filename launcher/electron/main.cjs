@@ -1011,6 +1011,11 @@ async function start() {
   }
   app.commandLine.appendSwitch("remote-debugging-address", "127.0.0.1");
   app.commandLine.appendSwitch("remote-debugging-port", String(cdpPort));
+  // Background automation tabs must keep rendering and running timers at full rate; otherwise a
+  // hidden or occluded ChatGPT turn can stall long enough for the helper's DOM probes to time out.
+  app.commandLine.appendSwitch("disable-renderer-backgrounding");
+  app.commandLine.appendSwitch("disable-background-timer-throttling");
+  app.commandLine.appendSwitch("disable-backgrounding-occluded-windows");
 
   await app.whenReady();
 

@@ -3263,3 +3263,68 @@ test("manual turns have no live-session TTL but are revoked when their owner pro
     status: "failed",
   });
 });
+
+test("a background turn start never moves the selected running automatic tab", async () => {
+  const running = { id: "tab-running", traceId: "trace_running", interactionMode: "automatic", status: "running" };
+  const created = [];
+  const fixture = Object.assign(Object.create(BrowserHost.prototype), {
+    manualOperation: null,
+    turnTabs: new Map([[running.id, running]]),
+    userCancelledTurnOwners: new Map(),
+    selectedTabId: running.id,
+    async createTurnTab(traceId) {
+      const tab = {
+        id: `tab-${traceId}`, surfaceId: `surface-${traceId}`, traceId,
+        interactionMode: "automatic", status: "running",
+      };
+      this.turnTabs.set(tab.id, tab);
+      created.push(tab.id);
+      return tab;
+    },
+    show() {},
+    syncViewVisibility() {},
+    snapshot: () => ({ tabs: [] }),
+    publishState() {},
+    writeDescriptor() {},
+    logger: { info() {}, warn() {} },
+  });
+
+  await BrowserHost.prototype.beginTurn.call(fixture, "trace_background", false, process.pid);
+  assert.equal(fixture.selectedTabId, running.id);
+
+  await BrowserHost.prototype.beginTurn.call(fixture, "trace_revealed", true, process.pid);
+  assert.equal(fixture.selectedTabId, "tab-trace_revealed");
+
+  running.status = "ready";
+  fixture.selectedTabId = running.id;
+  await BrowserHost.prototype.beginTurn.call(fixture, "trace_after_idle", false, process.pid);
+  assert.equal(fixture.selectedTabId, "tab-trace_after_idle");
+  assert.deepEqual(created, ["tab-trace_background", "tab-trace_revealed", "tab-trace_after_idle"]);
+});
+
+test("removing the selected tab never selects a running automatic tab", () => {
+  const view = () => ({ webContents: { isDestroyed: () => false, close() {} } });
+  const ended = { id: "tab-ended", traceId: "trace_ended", interactionMode: "automatic", status: "ready", view: view() };
+  const running = { id: "tab-running", traceId: "trace_running", interactionMode: "automatic", status: "running", view: view() };
+  const idle = { id: "tab-idle", traceId: "trace_idle", interactionMode: "automatic", status: "ready", view: view() };
+  const fixture = (tabs) => Object.assign(Object.create(BrowserHost.prototype), {
+    turnTabs: new Map(tabs.map(tab => [tab.id, tab])),
+    selectedTabId: ended.id,
+    closedTurnOwners: new Map(),
+    window: { contentView: { removeChildView() {} } },
+    view: { webContents: { getURL: () => "https://chatgpt.com/" } },
+    syncPowerSaveBlocker() {},
+    syncViewVisibility() {},
+    snapshot: () => ({ tabs: [] }),
+    publishState() {},
+    writeDescriptor() {},
+  });
+
+  const onlyRunning = fixture([running, ended]);
+  BrowserHost.prototype.removeTurnTab.call(onlyRunning, ended, false);
+  assert.equal(onlyRunning.selectedTabId, "home");
+
+  const withIdle = fixture([idle, running, ended]);
+  BrowserHost.prototype.removeTurnTab.call(withIdle, ended, false);
+  assert.equal(withIdle.selectedTabId, idle.id);
+});

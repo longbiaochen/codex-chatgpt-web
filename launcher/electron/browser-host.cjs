@@ -527,6 +527,25 @@ class BrowserHost {
     return this.turnTabs.get(this.selectedTabId) || null;
   }
 
+  /**
+   * Switching a running automatic tab between the on-screen view and the off-screen emulated
+   * viewport resizes and relayouts its whole document. With a very large ChatGPT transcript that
+   * stalls the renderer long enough for the helper's DOM probes to time out, so background turn
+   * starts and ends must never move another running automatic tab.
+   */
+  selectedRunningAutomaticTab() {
+    const selected = this.selectedTurnTab();
+    return selected && selected.interactionMode === "automatic" && selected.status === "running"
+      ? selected
+      : null;
+  }
+
+  selectTurnTabForTurnStart(tab, reveal) {
+    if (reveal || !this.selectedRunningAutomaticTab() || this.selectedTabId === tab.id) {
+      this.selectedTabId = tab.id;
+    }
+  }
+
   async createTurnTab(traceId, helperPid, conversationKey, connectorIdentity) {
     if (this.turnTabs.size >= MAX_BROWSER_TABS
       && !BrowserHost.prototype.evictOldestReclaimableTurnTab.call(this)) {
@@ -1571,7 +1590,11 @@ class BrowserHost {
     try { this.window.contentView.removeChildView(tab.view); } catch {}
     if (!tab.view.webContents.isDestroyed()) tab.view.webContents.close();
     if (this.selectedTabId === tab.id) {
-      this.selectedTabId = [...this.turnTabs.keys()].at(-1) || "home";
+      // Prefer a tab that is not mid-turn: selecting a running automatic tab would move it from its
+      // off-screen emulated viewport on screen and relayout it while ChatGPT is still working.
+      const idle = [...this.turnTabs.values()]
+        .filter(candidate => !(candidate.interactionMode === "automatic" && candidate.status === "running"));
+      this.selectedTabId = idle.at(-1)?.id || "home";
       const homeContents = this.view?.webContents;
       if (this.selectedTabId === "home"
         && !this.activeTraceId
@@ -2303,7 +2326,7 @@ class BrowserHost {
       if (!existing.view.webContents.isDestroyed()) {
         existing.view.webContents.setBackgroundThrottling(false);
       }
-      this.selectedTabId = existing.id;
+      this.selectTurnTabForTurnStart(existing, reveal);
       if (reveal) this.show();
       else this.syncViewVisibility();
       this.publishState?.(this.snapshot());
@@ -2322,7 +2345,7 @@ class BrowserHost {
       throw error;
     }
     const tab = await this.createTurnTab(traceId, helperPid, conversationKey, connectorIdentity);
-    this.selectedTabId = tab.id;
+    this.selectTurnTabForTurnStart(tab, reveal);
     if (reveal) this.show();
     else this.syncViewVisibility();
     this.publishState?.(this.snapshot());
