@@ -1105,6 +1105,11 @@ export const MAX_CHATGPT_BROWSER_PAGE_REBINDS = 2;
 export const CHATGPT_LIVE_PROBE_BACKOFF_MS = Object.freeze([1_000, 2_000, 5_000]);
 /** Connection attempts for one same-page rebind; a stalled page often recovers within a minute. */
 export const MAX_CHATGPT_PAGE_REBIND_CONNECT_ATTEMPTS = 2;
+/**
+ * CDP connect budget for one rebind attempt. Two shorter attempts (see
+ * MAX_CHATGPT_PAGE_REBIND_CONNECT_ATTEMPTS) catch a page that recovers after the first one expires.
+ */
+export const CHATGPT_PAGE_REBIND_CONNECT_TIMEOUT_MS = 20_000;
 
 /** Only a rebind that ran out of time may be retried; every other failure stays terminal. */
 export function isRetryableChatGptPageRebindFailure(error: unknown): boolean {
@@ -4620,7 +4625,7 @@ export class ChatGptBrowserWorker {
                 });
                 const rebound = await connectLauncherBrowserHost(
                   this.config.browserHostDescriptorPath!,
-                  browserStageTimeouts.browserPage,
+                  CHATGPT_PAGE_REBIND_CONNECT_TIMEOUT_MS,
                   launcherSurfaceId,
                   signal,
                 );
