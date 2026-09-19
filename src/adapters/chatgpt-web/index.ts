@@ -1,4 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
+import { launcherHostForConversation } from "./launcher-host-pool";
 import { resolve } from "node:path";
 import { isChatGptWebZeroRiskBackendModel } from "../../chatgpt-web-models";
 import { defaultBrokerEndpoint, expandUserPath, resolveBrokerEndpoint } from "../../config";
@@ -432,7 +433,10 @@ export function createChatGptWebAdapter(
     const retainConversation = conversationKey !== undefined;
     const releaseRetainedConversation = conversationKey && retainedLauncherDescriptor
       ? async () => {
-        await releaseLauncherRetainedConversation(retainedLauncherDescriptor, conversationKey);
+        await releaseLauncherRetainedConversation(
+          launcherHostForConversation(conversationKey) ?? retainedLauncherDescriptor,
+          conversationKey,
+        );
       }
       : undefined;
     const compileOptionsFor = (input: CodexParsedRequest) => {

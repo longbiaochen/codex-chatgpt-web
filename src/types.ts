@@ -270,6 +270,8 @@ export interface CodexProviderConfig {
     browserHost?: "managed-chrome" | "launcher";
     /** Owner-only descriptor containing the launcher's loopback CDP and control endpoints. */
     browserHostDescriptorPath?: string;
+    /** Extra launcher browser hosts (descriptor paths) that share this bridge's broker and connector. */
+    browserHostPool?: string[];
     /** Explicit browser-helper bundle. DEV builds current source; the launcher still supplies Electron-as-Node. */
     browserHelperScriptPath?: string;
     /** Explicit private diagnostic root for isolated harnesses. */

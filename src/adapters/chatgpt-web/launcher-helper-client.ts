@@ -1,4 +1,5 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { rememberLauncherHostAffinity, selectLauncherHost } from "./launcher-host-pool";
 import { existsSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { createInterface } from "node:readline";
@@ -12,6 +13,8 @@ import {
 } from "./rolling-checkpoint";
 
 interface PendingTurn {
+  /** Launcher browser host (descriptor path) that owns this turn's tab. */
+  host?: string;
   turn: BrowserTurn;
   resolve: (value: string) => void;
   reject: (error: Error) => void;
@@ -232,8 +235,18 @@ export class LauncherBrowserHelperClient {
           rejectResult(new Error(`Duplicate launcher browser turn: ${turn.traceId}`));
           return;
         }
-        const pending: PendingTurn = { turn, resolve: resolveResult, reject: rejectResult };
+        const host = selectLauncherHost({
+          primary: this.config.browserHostDescriptorPath!,
+          pool: this.config.browserHostPool,
+          conversationKey: turn.conversationKey,
+          activeTurns: candidate => [...this.pending.values()].filter(item => item.host === candidate).length,
+        });
+        const pending: PendingTurn = { turn, resolve: resolveResult, reject: rejectResult, host };
         this.pending.set(turn.traceId, pending);
+        if (turn.retainConversation && turn.conversationKey) rememberLauncherHostAffinity(turn.conversationKey, host);
+        if (this.config.browserHostPool?.length) {
+          console.info(`[chatgpt-web] browser turn ${turn.traceId} assigned to launcher host ${host}`);
+        }
         if (turn.abortSignal) {
           const abortListener = () => {
             if (!pending.sent) {
@@ -273,7 +286,7 @@ export class LauncherBrowserHelperClient {
           id: turn.traceId,
           config: {
             appName: this.config.appName,
-            browserHostDescriptorPath: this.config.browserHostDescriptorPath!,
+            browserHostDescriptorPath: pending.host ?? this.config.browserHostDescriptorPath!,
             browserDiagnosticsPath: this.config.browserDiagnosticsPath,
             turnTimeoutMs: this.config.turnTimeoutMs,
             autoApproveToolCalls: this.config.autoApproveToolCalls,
@@ -658,7 +671,7 @@ export class LauncherBrowserHelperClient {
     for (const id of [...this.pending.keys()]) {
       const pending = this.pending.get(id);
       if (!pending) continue;
-      void notifyLauncherTurn(this.config.browserHostDescriptorPath!, {
+      void notifyLauncherTurn(pending.host ?? this.config.browserHostDescriptorPath!, {
         phase: "end",
         traceId: id,
         helperPid: child.pid!,
