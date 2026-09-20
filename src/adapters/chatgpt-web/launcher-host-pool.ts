@@ -1,4 +1,4 @@
-import { readLauncherBrowserHostDescriptor } from "../../launcher-browser-host";
+import { readLauncherBrowserHostDescriptor, type LauncherBrowserHostDescriptor } from "../../launcher-browser-host";
 
 /**
  * Several launcher browser processes can host ChatGPT turns for one bridge. Each launcher is its own
@@ -60,6 +60,26 @@ export function availableLauncherHosts(
     }
   }
   return hosts.length > 0 ? hosts : [primary];
+}
+
+/**
+ * The browser helper is one process for every host, so it can be started from any live launcher's
+ * binary. Prefer the primary, fall back to a live pool member, and when nothing is live re-read the
+ * primary so its own error is what the caller sees.
+ */
+export function readAnyLauncherBrowserHostDescriptor<T = LauncherBrowserHostDescriptor>(
+  primary: string,
+  pool: readonly string[] = [],
+  read: (path: string) => T = readLauncherBrowserHostDescriptor as unknown as (path: string) => T,
+): T {
+  for (const host of availableLauncherHosts(primary, pool, read as DescriptorReader)) {
+    try {
+      return read(host);
+    } catch {
+      // Raced with that launcher exiting; try the next one.
+    }
+  }
+  return read(primary);
 }
 
 /**

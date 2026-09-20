@@ -1,6 +1,7 @@
 import { afterEach, expect, test } from "bun:test";
 import {
   availableLauncherHosts,
+  readAnyLauncherBrowserHostDescriptor,
   clearLauncherHostAffinity,
   launcherHostForConversation,
   rememberLauncherHostAffinity,
@@ -73,4 +74,17 @@ test("a retained conversation stays on its launcher while that launcher is live"
   } finally {
     alive.add("/hosts/gamma.json");
   }
+});
+
+test("the browser helper starts from any live launcher, not only the primary", () => {
+  const descriptors = (path: string) => {
+    if (!alive.has(path)) throw new Error(`descriptor is not live: ${path}`);
+    return { host: path };
+  };
+  expect(readAnyLauncherBrowserHostDescriptor("/hosts/alpha.json", ["/hosts/beta.json"], descriptors))
+    .toEqual({ host: "/hosts/alpha.json" });
+  expect(readAnyLauncherBrowserHostDescriptor("/hosts/dead-primary.json", ["/hosts/beta.json"], descriptors))
+    .toEqual({ host: "/hosts/beta.json" });
+  expect(() => readAnyLauncherBrowserHostDescriptor("/hosts/dead-primary.json", ["/hosts/dead.json"], descriptors))
+    .toThrow("descriptor is not live: /hosts/dead-primary.json");
 });
