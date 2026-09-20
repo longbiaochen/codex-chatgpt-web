@@ -15,10 +15,32 @@ const read = (path: string) => {
   return {};
 };
 
-test("the primary launcher is always available; pool members only while their descriptor is live", () => {
+test("every launcher, primary included, is available only while its descriptor is live", () => {
   expect(availableLauncherHosts("/hosts/alpha.json", ["/hosts/beta.json", "/hosts/dead.json", "/hosts/alpha.json"], read))
     .toEqual(["/hosts/alpha.json", "/hosts/beta.json"]);
   expect(availableLauncherHosts("/hosts/dead-primary.json", [], read)).toEqual(["/hosts/dead-primary.json"]);
+});
+
+test("a dead primary hands its turns to a live pool member", () => {
+  expect(availableLauncherHosts("/hosts/dead-primary.json", ["/hosts/beta.json", "/hosts/gamma.json"], read))
+    .toEqual(["/hosts/beta.json", "/hosts/gamma.json"]);
+  expect(selectLauncherHost({
+    primary: "/hosts/dead-primary.json",
+    pool: ["/hosts/beta.json", "/hosts/gamma.json"],
+    activeTurns: host => (host === "/hosts/beta.json" ? 2 : 0),
+    read,
+  })).toBe("/hosts/gamma.json");
+});
+
+test("a conversation pinned to a launcher that died falls back to a live one", () => {
+  rememberLauncherHostAffinity("conversation-dead", "/hosts/dead-primary.json");
+  expect(selectLauncherHost({
+    primary: "/hosts/dead-primary.json",
+    pool: ["/hosts/beta.json"],
+    activeTurns: () => 0,
+    conversationKey: "conversation-dead",
+    read,
+  })).toBe("/hosts/beta.json");
 });
 
 test("a new turn goes to the launcher with the fewest turns in flight, preferring the primary on ties", () => {

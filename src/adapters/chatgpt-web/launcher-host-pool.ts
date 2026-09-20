@@ -39,17 +39,18 @@ export function clearLauncherHostAffinity(): void {
 type DescriptorReader = (path: string) => unknown;
 
 /**
- * The primary launcher is always a candidate (its failures surface exactly as before). Extra pool
- * members are used only while their descriptor is valid: owned by this user, private, and naming a
- * live launcher process.
+ * A launcher is a candidate only while its descriptor is valid: owned by this user, private, and
+ * naming a live launcher process. The primary is checked like every pool member, so a restarting or
+ * crashed primary hands its turns to a live pool member instead of failing them. When nothing is
+ * live the primary is still returned, so a single-launcher install fails exactly as before.
  */
 export function availableLauncherHosts(
   primary: string,
   pool: readonly string[] = [],
   read: DescriptorReader = readLauncherBrowserHostDescriptor,
 ): string[] {
-  const hosts = [primary];
-  for (const host of pool) {
+  const hosts: string[] = [];
+  for (const host of [primary, ...pool]) {
     if (hosts.includes(host)) continue;
     try {
       read(host);
@@ -58,12 +59,12 @@ export function availableLauncherHosts(
       // An absent, stale or foreign descriptor is simply not available for new turns.
     }
   }
-  return hosts;
+  return hosts.length > 0 ? hosts : [primary];
 }
 
 /**
  * Choose the launcher for a new browser turn: the conversation's own launcher when it is still
- * available, otherwise the one with the fewest turns in flight (ties keep the primary first).
+ * available, otherwise the live one with the fewest turns in flight (ties keep the primary first).
  */
 export function selectLauncherHost(options: {
   primary: string;
