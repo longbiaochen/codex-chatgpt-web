@@ -79,6 +79,49 @@ function currentWire(
 }
 
 describe("trusted current Codex environment envelope", () => {
+  test("keeps the turn's envelope readable when native compaction inserts its summary after it", () => {
+    // Codex 0.155 rebuilds a compacted turn as: developer preamble, the turn's user message whose
+    // parts carry plugins/AGENTS.md/environment_context, the compaction summary as its own user
+    // message, a developer world-state message, then the instruction being answered. The envelope
+    // is therefore no longer the message immediately before the instruction.
+    const request = currentWire();
+    const body = request._rawBody as { input: unknown[] };
+    body.input.splice(1, 0, {
+      type: "message",
+      id: "msg_compaction_summary",
+      role: "user",
+      content: [{ type: "input_text", text: `${SUMMARY_PREFIX}\n\nEarlier work rebuilt the app.` }],
+    }, {
+      type: "message",
+      id: "msg_world_state",
+      role: "developer",
+      content: [{ type: "input_text", text: "<world_state>...</world_state>" }],
+    });
+
+    expect(extractChatGptTurnEnvironment(request)).toEqual({
+      cwd: root,
+      roots: [root],
+      writableRoots: [root],
+      sandboxPolicy: { type: "dangerFullAccess" },
+      tools: [],
+    });
+  });
+
+  test("a compaction summary stamped with another turn is not skipped over", () => {
+    const request = currentWire();
+    const body = request._rawBody as { input: unknown[] };
+    body.input.splice(1, 0, {
+      type: "message",
+      id: "msg_compaction_summary",
+      role: "user",
+      content: [{ type: "input_text", text: `${SUMMARY_PREFIX}\n\nEarlier work rebuilt the app.` }],
+      internal_chat_message_metadata_passthrough: { turn_id: "turn_other" },
+    });
+
+    expect(() => extractChatGptTurnEnvironment(request))
+      .toThrow("ChatGPT web turn is missing cwd in trusted Codex environment context");
+  });
+
   test("accepts the v0.146 split envelope when workspace and sandbox metadata agree", () => {
     expect(extractChatGptTurnEnvironment(currentWire())).toEqual({
       cwd: root,
