@@ -389,3 +389,19 @@ test("catalog verification reports a failed request instead of requesting anothe
   assert.equal(state.codexRestartRequired, false);
   assert.ok(events.some(([event]) => event === "codex.model_catalog_verified"));
 });
+
+test("a browser-host-only launcher hides everything that would start a bridge here", () => {
+  assert.match(electronMain, /browserHostOnly: LAUNCHER_PROFILE\.browserHostOnly === true/);
+  assert.match(appSource, /const browserHostOnly = snapshot\.browserHostOnly === true/);
+  // The install step, the Codex restart notice and both MCP entry points are gated on it.
+  assert.match(appSource, /\{browserHostOnly \? null : <SetupRow/);
+  assert.match(appSource, /!devProfile && !browserHostOnly && snapshot\.state\.codexRestartRequired/);
+  assert.match(appSource, /\{browserHostOnly \? null : <SidebarItem/);
+  assert.match(appSource, /\{browserHostOnly \? null : <>\n\s*<SectionHeading label="MCP"/);
+  // Signing in and the smoke test stay available: that is what the host window is for.
+  assert.match(appSource, /onAction=\{openLogin\}/);
+  // It opens on the browser instead of a setup page it can never complete, and does not nag.
+  assert.match(appSource, /interactionSetupComplete \|\| browserHostOnly \? "browser" : "setup"/);
+  assert.match(appSource, /const needsSetup = !needsBrowser && !interactionSetupComplete && !browserHostOnly/);
+  assert.match(appSource, /title=\{browserHostOnly \? copy\.hostOnlySetupTitle/);
+});

@@ -60,3 +60,27 @@ test("DEV launcher ignores generic production path overrides", () => {
   assert.equal(development.codexHome, path.join(homeDir, "isolated-dev", "codex-home"));
   assert.equal(development.userData, path.join(homeDir, "isolated-dev", "launcher"));
 });
+
+test("a pool host opts into browser-host-only mode through the environment", () => {
+  const homeDir = path.resolve("/Users/tester");
+  const appData = path.join(homeDir, "Library", "Application Support");
+  const plain = resolveLauncherProfile({ argv: ["electron", "."], env: {}, homeDir, appData });
+  const hostOnly = resolveLauncherProfile({
+    argv: ["electron", "."],
+    env: { CODEX_WEB_GPT_BROWSER_HOST_ONLY: "1" },
+    homeDir,
+    appData,
+  });
+  const notOptedIn = resolveLauncherProfile({
+    argv: ["electron", "."],
+    env: { CODEX_WEB_GPT_BROWSER_HOST_ONLY: "0" },
+    homeDir,
+    appData,
+  });
+
+  assert.equal(plain.browserHostOnly, false);
+  assert.equal(hostOnly.browserHostOnly, true);
+  assert.equal(notOptedIn.browserHostOnly, false);
+  assert.equal(hostOnly.coreHome, plain.coreHome);
+  assert.equal(hostOnly.userData, plain.userData);
+});

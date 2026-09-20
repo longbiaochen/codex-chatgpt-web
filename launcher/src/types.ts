@@ -96,6 +96,7 @@ export type UpdateState =
 
 export interface LauncherSnapshot {
   profile: LauncherProfile;
+  browserHostOnly?: boolean;
   profilePaths: {
     coreHome: string;
     codexHome: string;
