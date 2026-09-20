@@ -336,8 +336,11 @@ function LauncherShell({
       || snapshot.state.codexCatalogVerified === true);
   const firstRunZeroRiskSetup = snapshot.state.browserInteractionMode === "manual"
     && snapshot.state.coreSetupComplete !== true;
+  // A pool host: the bridge runs in another process, so anything that would install or start one
+  // here is hidden — this window exists to sign in to ChatGPT and to host turns.
+  const browserHostOnly = snapshot.browserHostOnly === true;
   const [surface, setSurface] = useState<Surface>(
-    firstRunZeroRiskSetup ? "mcp" : interactionSetupComplete ? "browser" : "setup",
+    firstRunZeroRiskSetup ? "mcp" : interactionSetupComplete || browserHostOnly ? "browser" : "setup",
   );
   const devProfile = snapshot.profile === "development";
   const compactAtMount = useRef(window.matchMedia(COMPACT_SIDEBAR_QUERY).matches).current;
@@ -359,7 +362,7 @@ function LauncherShell({
     && !biggerContextRecommendationOpen;
   const needsBrowser = snapshot.state.browserInteractionMode === "automatic"
     && browser?.authenticated !== true;
-  const needsSetup = !needsBrowser && !interactionSetupComplete;
+  const needsSetup = !needsBrowser && !interactionSetupComplete && !browserHostOnly;
   const mcpOptional = snapshot.state.browserInteractionMode === "automatic"
     && snapshot.state.codexCatalogVerified === true
     && snapshot.state.mcpSetupComplete !== true;
@@ -591,7 +594,7 @@ function LauncherShell({
                   label={copy.setup}
                   onClick={() => navigateSurface("setup")}
                 />
-                <SidebarItem
+                {browserHostOnly ? null : <SidebarItem
                   active={surface === "mcp"}
                   badge={mcpOptional ? <ActionDot tone="optional" /> : null}
                   icon="mcp"
@@ -600,7 +603,7 @@ function LauncherShell({
                     setMcpTargetMode(null);
                     navigateSurface("mcp");
                   }}
-                />
+                />}
               </SidebarGroup>
               <SidebarGroup label={copy.runtime}>
                 <SidebarItem active={surface === "activity"} icon="activity" label={copy.activity} onClick={() => navigateSurface("activity")} />
@@ -654,6 +657,7 @@ function LauncherShell({
               <SetupSurface
                 activateBrowser={activateBrowser}
                 browser={browser}
+                browserHostOnly={browserHostOnly}
                 copy={copy}
                 devProfile={devProfile}
                 operation={operation}
@@ -1078,6 +1082,7 @@ function ManualTurnGuide({
 function SetupSurface({
   activateBrowser,
   browser,
+  browserHostOnly,
   copy,
   devProfile,
   operation,
@@ -1088,6 +1093,7 @@ function SetupSurface({
 }: {
   activateBrowser: (show?: boolean) => Promise<void>;
   browser: BrowserState | null;
+  browserHostOnly: boolean;
   copy: Copy;
   devProfile: boolean;
   operation: OperationState | null;
@@ -1138,10 +1144,12 @@ function SetupSurface({
   return (
     <ContentSurface
       eyebrow={copy.required}
-      subtitle={devProfile
-        ? copy.devSetupSubtitle
-        : manualInteraction ? copy.manualInteractionBody : copy.setupSubtitle}
-      title={devProfile ? copy.devSetupTitle : copy.setupTitle}
+      subtitle={browserHostOnly
+        ? copy.hostOnlySetupSubtitle
+        : devProfile
+          ? copy.devSetupSubtitle
+          : manualInteraction ? copy.manualInteractionBody : copy.setupSubtitle}
+      title={browserHostOnly ? copy.hostOnlySetupTitle : devProfile ? copy.devSetupTitle : copy.setupTitle}
     >
       <SectionHeading label={devProfile ? copy.devCoreSetup : copy.coreSetup} />
       <div className="setup-list">
@@ -1167,7 +1175,7 @@ function SetupSurface({
             title={copy.stepSmoke}
           />
         </> : null}
-        <SetupRow
+        {browserHostOnly ? null : <SetupRow
           action={snapshot.state.coreSetupComplete
             ? devProfile ? copy.devReinstall : copy.reinstall
             : devProfile ? copy.devInstall : copy.install}
@@ -1186,15 +1194,16 @@ function SetupSurface({
               onChange={(enabled) => void setZeroRiskPro(enabled)}
             />
           ) : undefined}
-        />
+        />}
       </div>
 
-      {!devProfile && snapshot.state.codexRestartRequired ? (
+      {!devProfile && !browserHostOnly && snapshot.state.codexRestartRequired ? (
         <NoticeRow icon="alert" tone="warning">
           {copy.restartCodex}
         </NoticeRow>
       ) : null}
 
+      {browserHostOnly ? null : <>
       <SectionHeading label="MCP" meta={manualInteraction ? copy.required : copy.optional} spaced />
       <button
         className="next-surface-row"
@@ -1210,6 +1219,7 @@ function SetupSurface({
         <em>{snapshot.state.mcpSetupComplete ? copy.mcpReady : copy.configureMcp}</em>
         <Icon name="chevron" />
       </button>
+      </>}
     </ContentSurface>
   );
 }

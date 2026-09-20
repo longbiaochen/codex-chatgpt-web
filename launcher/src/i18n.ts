@@ -1,6 +1,8 @@
 import type { Language } from "./types";
 
 const en = {
+  hostOnlySetupTitle: "Browser host",
+  hostOnlySetupSubtitle: "This launcher only hosts the browser. Sign in to ChatGPT here; the bridge runs as a separate service.",
   product: "Codex Web GPT",
   devBadge: "DEV",
   devSetupTitle: "Set up the isolated DEV profile",
@@ -203,6 +205,8 @@ const en = {
 } as const;
 
 const zh: Record<keyof typeof en, string> = {
+  hostOnlySetupTitle: "浏览器宿主",
+  hostOnlySetupSubtitle: "这个启动器只承载浏览器：在这里登录 ChatGPT，桥作为独立服务在别处运行。",
   product: "Codex Web GPT",
   devBadge: "DEV",
   devSetupTitle: "设置隔离的 DEV 配置",
@@ -405,6 +409,8 @@ const zh: Record<keyof typeof en, string> = {
 };
 
 const ja: Record<keyof typeof en, string> = {
+  hostOnlySetupTitle: "ブラウザーホスト",
+  hostOnlySetupSubtitle: "このランチャーはブラウザーのみをホストします。ここで ChatGPT にサインインしてください。ブリッジは別のサービスとして動作します。",
   product: "Codex Web GPT",
   devBadge: "DEV",
   devSetupTitle: "隔離された DEV プロファイルをセットアップ",
@@ -607,6 +613,8 @@ const ja: Record<keyof typeof en, string> = {
 };
 
 const ko: Record<keyof typeof en, string> = {
+  hostOnlySetupTitle: "브라우저 호스트",
+  hostOnlySetupSubtitle: "이 런처는 브라우저만 호스팅합니다. 여기에서 ChatGPT에 로그인하세요. 브리지는 별도의 서비스로 실행됩니다.",
   product: "Codex Web GPT",
   devBadge: "DEV",
   devSetupTitle: "격리된 DEV 프로필 설정",
@@ -809,6 +817,8 @@ const ko: Record<keyof typeof en, string> = {
 };
 
 const zhTW: Record<keyof typeof en, string> = {
+  hostOnlySetupTitle: "瀏覽器宿主",
+  hostOnlySetupSubtitle: "這個啟動器只承載瀏覽器：在這裡登入 ChatGPT，橋接會以獨立服務在別處執行。",
   product: "Codex Web GPT",
   devBadge: "DEV",
   devSetupTitle: "設定隔離的 DEV 設定檔",

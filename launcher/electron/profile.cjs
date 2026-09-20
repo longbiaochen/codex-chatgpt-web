@@ -22,6 +22,9 @@ function resolveLauncherProfile({
     throw new Error("Launcher profile resolution requires an absolute appData path");
   }
   const development = argv.includes("--dev-profile");
+  // A pool host runs the browser only: its bridge lives in another process, so the setup steps that
+  // would start one here are hidden. Opt in explicitly; nothing is inferred from a missing config.
+  const browserHostOnly = env.CODEX_WEB_GPT_BROWSER_HOST_ONLY?.trim() === "1";
   if (!development) {
     const coreHome = env.CODEX_CHATGPT_WEB_HOME?.trim()
       ? resolveUserPath(env.CODEX_CHATGPT_WEB_HOME.trim(), homeDir)
@@ -31,6 +34,7 @@ function resolveLauncherProfile({
       : path.join(appData, "Codex Web GPT");
     return {
       kind: PRODUCTION_PROFILE,
+      browserHostOnly,
       displayName: "Codex Web GPT",
       coreHome,
       codexHome: env.CODEX_HOME?.trim()
@@ -52,6 +56,7 @@ function resolveLauncherProfile({
   }
   return {
     kind: DEVELOPMENT_PROFILE,
+    browserHostOnly,
     displayName: "Codex Web GPT DEV",
     coreHome,
     codexHome: path.join(coreHome, "codex-home"),

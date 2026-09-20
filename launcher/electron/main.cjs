@@ -496,6 +496,7 @@ function registerIpc({ logger, stateStore }) {
   const handle = (channel, handler) => registerLoggedIpc(ipcMain, logger, channel, handler);
   handle("launcher:snapshot", async () => ({
     profile: LAUNCHER_PROFILE.kind,
+    browserHostOnly: LAUNCHER_PROFILE.browserHostOnly === true,
     profilePaths: {
       coreHome: CORE_HOME,
       codexHome: LAUNCHER_PROFILE.codexHome,
