@@ -153,13 +153,16 @@ export class ChatGptThreadEnvironmentStore {
       if (identity.threadId) this.set(identity.threadId, environment);
       return environment;
     } catch (error) {
-      if (!(error instanceof MissingTrustedCodexEnvironmentError) || !identity.threadId) throw error;
+      if (!(error instanceof MissingTrustedCodexEnvironmentError)) throw error;
+      if (!identity.threadId) throw this.rejected(parsed, identity, { reason: "no-thread-id" }, error);
       const hasCurrentContext = hasCurrentChatGptEnvironmentContext(parsed);
       const lineage = extractChatGptThreadSpawnLineage(parsed);
       const currentCompaction = hasCurrentContext && isChatGptCompactionContinuation(parsed);
       const historicalMessages = hasCurrentContext && !currentCompaction && lineage
         ? unattributedChatGptEnvironmentMessages(parsed) : undefined;
-      if (hasCurrentContext && !currentCompaction && !historicalMessages) throw error;
+      if (hasCurrentContext && !currentCompaction && !historicalMessages) {
+        throw this.rejected(parsed, identity, { reason: "current-envelope-unparsed", hasCurrentContext, currentCompaction }, error);
+      }
       const currentClaim = currentCompaction ? extractChatGptContinuationEnvironmentClaim(parsed) : undefined;
       const rolloutIdentity = lineage ?? extractChatGptRootThreadMetadata(parsed);
       // Automatic compaction has a current turn_context; standalone compaction has only its
@@ -190,7 +193,9 @@ export class ChatGptThreadEnvironmentStore {
       // the same thread's already-trusted authority still applies to its later turns. History is
       // never itself turned into authority, and it never unlocks cross-thread inheritance.
       const hasRawContext = hasRawChatGptEnvironmentContext(parsed);
-      if (hasRawContext && hasCurrentContext) throw error;
+      if (hasRawContext && hasCurrentContext) {
+        throw this.rejected(parsed, identity, { reason: "current-raw-context", hasRawContext, hasCurrentContext, currentCompaction }, error);
+      }
       const sameThread = this.get(identity.threadId);
       if (sameThread) return {
         cwd: sameThread.cwd,
@@ -199,11 +204,11 @@ export class ChatGptThreadEnvironmentStore {
         sandboxPolicy: sameThread.sandboxPolicy,
         tools: parsed.context.tools ?? [],
       };
-      if (hasRawContext) throw error;
+      if (hasRawContext) throw this.rejected(parsed, identity, { reason: "historical-raw-context-no-cache", currentCompaction }, error);
 
-      if (!lineage) throw error;
+      if (!lineage) throw this.rejected(parsed, identity, { reason: "no-cache-no-lineage", currentCompaction, hasCurrentContext }, error);
       const parent = this.get(lineage.parentThreadId);
-      if (!parent) throw error;
+      if (!parent) throw this.rejected(parsed, identity, { reason: "lineage-parent-not-cached" }, error);
       if (lineage.sandboxType !== parent.sandboxPolicy.type) {
         throw new Error("ChatGPT Web subagent sandbox metadata conflicts with its trusted parent thread");
       }
@@ -225,6 +230,49 @@ export class ChatGptThreadEnvironmentStore {
       this.set(lineage.threadId, inherited);
       return inherited;
     }
+  }
+
+  /**
+   * A rejected turn used to fail silently, which made "missing cwd" reports impossible to place
+   * without reproducing them. Record which branch refused and what the request looked like; the
+   * shape only, never the prompt text.
+   */
+  private rejected(
+    parsed: CodexParsedRequest,
+    identity: { threadId?: string; turnId?: string },
+    flags: Record<string, unknown>,
+    error: unknown,
+  ): unknown {
+    try {
+      const body = parsed._rawBody as { input?: unknown } | undefined;
+      const input = Array.isArray(body?.input) ? body.input : [];
+      const shape = input.slice(-8).map(value => {
+        const item = value as Record<string, unknown> | null;
+        const content = item?.content;
+        const text = typeof content === "string" ? content
+          : Array.isArray(content) ? content.map(part => (part as Record<string, unknown>)?.text).filter(
+            (part): part is string => typeof part === "string").join("") : "";
+        return {
+          type: typeof item?.type === "string" ? item.type : "?",
+          ...(typeof item?.role === "string" ? { role: item.role } : {}),
+          chars: text.length,
+          ...(text.includes("<environment_context>") ? { envelope: true } : {}),
+        };
+      });
+      console.warn(`[chatgpt-web] environment_rejected ${JSON.stringify({
+        ...flags,
+        threadId: identity.threadId,
+        turnId: identity.turnId,
+        compactionRequest: parsed._compactionRequest === true,
+        cachedThread: identity.threadId ? this.get(identity.threadId) !== undefined : false,
+        inputItems: input.length,
+        tail: shape,
+        detail: error instanceof Error ? error.message : String(error),
+      })}`);
+    } catch {
+      // Diagnostics must never replace the original rejection.
+    }
+    return error;
   }
 
   private get(threadId: string): StoredThreadEnvironment | undefined {

@@ -469,6 +469,13 @@ function isCurrentOrParentThreadVisualizationRoot(path: string, metadata: Record
   });
 }
 
+/** A compaction summary replaces history; it is never itself an environment or an instruction. */
+function isCompactionSummaryMessage(item: Record<string, unknown>): boolean {
+  if (item.role !== "user") return false;
+  const text = rawMessageText(item).trim();
+  return isReadableCompactionSummaryText(text) || text === OPAQUE_COMPACTION_NOTE;
+}
+
 function canonicalMetadataEnvironmentBeforeUser(
   input: unknown[],
   userIndex: number,
@@ -487,10 +494,15 @@ function canonicalMetadataEnvironmentBeforeUser(
 
   let candidateIndex = userIndex - 1;
   let candidate = record(input[candidateIndex]);
-  while (candidate?.type === "message" && candidate.role === "developer") {
-    const developerTurnId = itemTurnId(candidate);
+  // Native compaction inserts its summary as a user message between the turn's environment
+  // envelope and the instruction being answered, so the envelope is no longer the immediately
+  // preceding message. That summary carries no authority of its own and is skipped under the same
+  // provenance rule as a developer message; any other user message still ends the search.
+  while (candidate?.type === "message"
+    && (candidate.role === "developer" || isCompactionSummaryMessage(candidate))) {
+    const skippedTurnId = itemTurnId(candidate);
     const serverOwnedId = typeof candidate.id === "string" && candidate.id.length > 0;
-    if (developerTurnId === undefined ? !serverOwnedId : developerTurnId !== metadataTurnId) return undefined;
+    if (skippedTurnId === undefined ? !serverOwnedId : skippedTurnId !== metadataTurnId) return undefined;
     candidateIndex -= 1;
     candidate = record(input[candidateIndex]);
   }
