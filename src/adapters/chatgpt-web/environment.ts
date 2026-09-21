@@ -469,6 +469,16 @@ function isCurrentOrParentThreadVisualizationRoot(path: string, metadata: Record
   });
 }
 
+/** True when one of this message's content parts is exactly an environment envelope. */
+function messageHoldsEnvelope(item: Record<string, unknown>): boolean {
+  const content = Array.isArray(item.content) ? item.content : [];
+  return content.some(part => {
+    const text = record(part)?.text;
+    return typeof text === "string"
+      && /^<environment_context>[\s\S]*<\/environment_context>$/.test(text.trim());
+  });
+}
+
 /** A compaction summary replaces history; it is never itself an environment or an instruction. */
 function isCompactionSummaryMessage(item: Record<string, unknown>): boolean {
   if (item.role !== "user") return false;
@@ -482,7 +492,8 @@ function canonicalMetadataEnvironmentBeforeUser(
   metadata: Record<string, unknown> | undefined,
   requireMetadataBoundRoots = false,
 ): string | undefined {
-  if (userIndex <= 0 || !metadata) return undefined;
+  // The envelope may sit in the anchor message itself, so index 0 is a valid anchor now.
+  if (userIndex < 0 || !metadata) return undefined;
   const metadataTurnId = typeof metadata.turn_id === "string" ? metadata.turn_id.trim() : "";
   const metadataSandbox = sandboxTypeFromMetadata(canonicalSandboxMetadata(metadata));
   if (!metadataTurnId || !metadataSandbox) return undefined;
@@ -492,14 +503,26 @@ function canonicalMetadataEnvironmentBeforeUser(
   const userTurnId = itemTurnId(user);
   if (userTurnId !== undefined && userTurnId !== metadataTurnId) return undefined;
 
-  let candidateIndex = userIndex - 1;
-  let candidate = record(input[candidateIndex]);
+  // After a compaction the turn's own message can be the last instruction in the request: Codex
+  // packs plugins, AGENTS.md and the environment envelope into its content parts and asks the
+  // model to continue from the summary, so there is no later instruction to walk back from. Read
+  // that message's own parts first; the envelope still has to bind to canonical metadata below,
+  // so this widens where the envelope may sit, not what it may claim.
+  let candidateIndex = userIndex;
+  let candidate: Record<string, unknown> | undefined = user;
   // Native compaction inserts its summary as a user message between the turn's environment
   // envelope and the instruction being answered, so the envelope is no longer the immediately
   // preceding message. That summary carries no authority of its own and is skipped under the same
   // provenance rule as a developer message; any other user message still ends the search.
   while (candidate?.type === "message"
-    && (candidate.role === "developer" || isCompactionSummaryMessage(candidate))) {
+    && (candidateIndex === userIndex
+      ? !messageHoldsEnvelope(candidate)
+      : candidate.role === "developer" || isCompactionSummaryMessage(candidate))) {
+    if (candidateIndex === userIndex) {
+      candidateIndex -= 1;
+      candidate = record(input[candidateIndex]);
+      continue;
+    }
     const skippedTurnId = itemTurnId(candidate);
     const serverOwnedId = typeof candidate.id === "string" && candidate.id.length > 0;
     if (skippedTurnId === undefined ? !serverOwnedId : skippedTurnId !== metadataTurnId) return undefined;

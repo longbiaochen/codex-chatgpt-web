@@ -833,6 +833,19 @@ export function createChatGptWebAdapter(
         const mode = manualRequest
           ? { localTools: true }
           : resolveChatGptWebModelMode(parsed.modelId, parsed.options.reasoning, turnCapabilities);
+        if (!mode.localTools) {
+          // Without local tools the turn carries no connector, so the web model can only talk. That
+          // is correct for a compaction turn, but indistinguishable from a broken one in the logs:
+          // a mis-sized contextWindow turns every ordinary turn into compaction and the model then
+          // answers "this session has no local execution tools" forever. Say which case this is.
+          const identity = extractChatGptTurnIdentity(parsed);
+          console.info(`[chatgpt-web] turn_without_local_tools ${JSON.stringify({
+            reason: parsed._compactionRequest ? "compaction" : "capability",
+            modelId: parsed.modelId,
+            threadId: identity.threadId,
+            turnId: identity.turnId,
+          })}`);
+        }
         const structuredOutputValidator = parsed._compactionRequest
           ? undefined
           : createChatGptStructuredOutputValidator(parsed.options.outputFormat);

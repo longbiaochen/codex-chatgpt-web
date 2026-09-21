@@ -106,6 +106,35 @@ describe("trusted current Codex environment envelope", () => {
     });
   });
 
+  test("reads the envelope from the turn's own message when the summary is the last item", () => {
+    // Observed on thread 01a0bf61: after an automatic compaction Codex sends 5 items — developer
+    // preamble, the turn's user message (plugins + AGENTS.md + environment_context parts), then
+    // the compaction summary as the final user item. The envelope message is itself the anchor,
+    // so nothing precedes it to walk back to.
+    const request = currentWire();
+    const body = request._rawBody as { input: unknown[] };
+    body.input.splice(0, 0, {
+      type: "message",
+      id: "msg_developer_preamble",
+      role: "developer",
+      content: [{ type: "input_text", text: "## Memory\n\npreamble" }],
+    });
+    body.input.splice(2, 1, {
+      type: "message",
+      id: "msg_compaction_summary",
+      role: "user",
+      content: [{ type: "input_text", text: `${SUMMARY_PREFIX}\n\nEarlier work rebuilt the app.` }],
+    });
+
+    expect(extractChatGptTurnEnvironment(request)).toEqual({
+      cwd: root,
+      roots: [root],
+      writableRoots: [root],
+      sandboxPolicy: { type: "dangerFullAccess" },
+      tools: [],
+    });
+  });
+
   test("a compaction summary stamped with another turn is not skipped over", () => {
     const request = currentWire();
     const body = request._rawBody as { input: unknown[] };
