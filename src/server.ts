@@ -384,12 +384,25 @@ function modelCatalogFailure(stage: ModelCatalogFailure["stage"], error: unknown
   return { stage, ...(typeof code === "string" && /^[A-Za-z0-9_.-]{1,64}$/.test(code) ? { code } : {}) };
 }
 
+/**
+ * Error class and a short message for the journal only (health snapshots never carry messages):
+ * Bearer values and URL credentials are removed first.
+ */
+function modelCatalogErrorForLog(error: unknown): string {
+  const name = error instanceof Error ? error.name : typeof error;
+  const message = (error instanceof Error ? error.message : String(error))
+    .replace(/Bearer\s+\S+/gi, "Bearer <redacted>")
+    .replace(/\/\/[^/\s@]+@/g, "//<redacted>@")
+    .slice(0, 160);
+  return `${name}: ${message}`;
+}
+
 export async function modelsRequest(
   req: Request,
   config: AppConfig,
   fetchUpstream?: NativeFetch,
   contextOverride?: () => CodexModelContextOverride | undefined,
-  onFailure?: (failure: ModelCatalogFailure) => void,
+  onFailure?: (failure: ModelCatalogFailure, detail?: string) => void,
 ): Promise<Response> {
   let upstream: Response;
   let sent = false;
@@ -399,7 +412,7 @@ export async function modelsRequest(
       return (fetchUpstream ?? fetchNativeCodex)(input);
     });
   } catch (error) {
-    onFailure?.(modelCatalogFailure(sent ? "transport" : "request", error));
+    onFailure?.(modelCatalogFailure(sent ? "transport" : "request", error), modelCatalogErrorForLog(error));
     return formatErrorResponse(502, "upstream_error", error instanceof Error ? error.message : String(error));
   }
   if (!upstream.ok) {
@@ -1002,13 +1015,20 @@ export function startServer(
         return httpTurns.track(async signal => {
           const request = ++modelCatalogRequests;
           const started = Date.now();
+          let failureDetail: string | undefined;
           const recordResult = (response: Response, failure?: ModelCatalogFailure): Response => {
             const result = { request, at: new Date().toISOString(), status: response.status, ...(failure ? { failure } : {}) };
             // An older, slower request must not replace a newer completed result.
             if (!lastModelCatalogResult || request > lastModelCatalogResult.request) lastModelCatalogResult = result;
             if (!response.ok) {
               try {
-                console.warn(`[codex-chatgpt-web] model_catalog_failed ${JSON.stringify({ ...result, elapsedMs: Date.now() - started })}`);
+                console.warn(`[codex-chatgpt-web] model_catalog_failed ${JSON.stringify({
+                  ...result,
+                  elapsedMs: Date.now() - started,
+                  ...(failureDetail ? { error: failureDetail } : {}),
+                  client: (req.headers.get("user-agent") ?? "").slice(0, 80),
+                  clientAborted: req.signal.aborted,
+                })}`);
               } catch { /* Logging must not replace the catalog result. */ }
             }
             return response;
@@ -1032,7 +1052,7 @@ export function startServer(
             catalogConfig,
             dependencies.fetchUpstream,
             readCodexModelContextOverride,
-            value => { failure = value; },
+            (value, detail) => { failure = value; failureDetail = detail; },
           );
           if (response.ok) {
             successfulModelCatalogRequests += 1;
