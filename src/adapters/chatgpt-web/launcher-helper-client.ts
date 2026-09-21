@@ -250,18 +250,23 @@ export class LauncherBrowserHelperClient {
     // Every pool host drives the same ChatGPT account; pace the account before picking a host.
     const admission = sharedAdmission(this.config);
     if (!admission) return await this.runAdmitted(turn);
-    const release = await admission.acquire(turn.conversationKey ?? turn.traceId, turn.traceId, turn.abortSignal);
+    const release = await admission.acquire(turn.conversationKey ?? turn.traceId, turn.traceId, turn.abortSignal, {
+      ...(turn.threadId ? { threadId: turn.threadId } : {}),
+      model: turn.modelId,
+    });
+    let failure: unknown;
     try {
-      return await this.runAdmitted(turn);
+      return await this.runAdmitted(turn, host => admission.noteHost(turn.traceId, host));
     } catch (error) {
+      failure = error;
       if (isChatGptRateLimitError(error)) admission.noteThrottle();
       throw error;
     } finally {
-      release();
+      release(failure === undefined ? undefined : failure instanceof Error ? failure.message : String(failure));
     }
   }
 
-  private async runAdmitted(turn: BrowserTurn): Promise<string> {
+  private async runAdmitted(turn: BrowserTurn, onHost?: (host: string) => void): Promise<string> {
     return await new Promise<string>((resolveResult, rejectResult) => {
         if (this.pending.has(turn.traceId)) {
           rejectResult(new Error(`Duplicate launcher browser turn: ${turn.traceId}`));
@@ -273,6 +278,7 @@ export class LauncherBrowserHelperClient {
           conversationKey: turn.conversationKey,
           activeTurns: candidate => [...this.pending.values()].filter(item => item.host === candidate).length,
         });
+        onHost?.(host);
         const pending: PendingTurn = { turn, resolve: resolveResult, reject: rejectResult, host };
         this.pending.set(turn.traceId, pending);
         if (turn.retainConversation && turn.conversationKey) rememberLauncherHostAffinity(turn.conversationKey, host);

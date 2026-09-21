@@ -169,3 +169,34 @@ describe("ChatGPT account admission", () => {
     expect(live.running).toBe(1);                                  // t2 took the freed slot
   });
 });
+
+describe("ChatGPT account admission turn records", () => {
+  test("records admitted turns with thread, model, host and outcome", async () => {
+    const root = mkdtempSync(join(tmpdir(), "chatgpt-admission-"));
+    roots.push(root);
+    const statePath = join(root, "state.json");
+    const { admission } = harness({ statePath });
+    const ok = await admission.acquire("k1", "t1", undefined, { threadId: "thread-a", model: "chatgpt-web/high" });
+    admission.noteHost("t1", "beta");
+    ok();
+    const failed = await admission.acquire("k2", "t2", undefined, { threadId: "thread-b" });
+    failed("ChatGPT stopped responding");
+    await admission.acquire("k3", "t3");                                    // still running at "restart"
+    const recent = JSON.parse(readFileSync(statePath, "utf8")).recent;
+    expect(recent.map((record: { traceId: string }) => record.traceId)).toEqual(["t1", "t2", "t3"]);
+    expect(recent[0]).toMatchObject({ threadId: "thread-a", model: "chatgpt-web/high", host: "beta" });
+    expect(recent[0].endedAt).toBeDefined();
+    expect(recent[1].error).toBe("ChatGPT stopped responding");
+  });
+
+  test("a turn open when the bridge stopped is recorded as interrupted", async () => {
+    const root = mkdtempSync(join(tmpdir(), "chatgpt-admission-"));
+    roots.push(root);
+    const statePath = join(root, "state.json");
+    await harness({ statePath }).admission.acquire("k", "open");
+    const { admission } = harness({ statePath });
+    (await admission.acquire("k2", "next"))();
+    const recent = JSON.parse(readFileSync(statePath, "utf8")).recent;
+    expect(recent[0]).toMatchObject({ traceId: "open", error: "bridge restarted" });
+  });
+});

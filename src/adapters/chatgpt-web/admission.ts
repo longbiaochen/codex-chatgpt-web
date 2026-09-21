@@ -33,6 +33,26 @@ const COOLDOWN_MS = 20 * 60_000;
 const COOLDOWN_CAP_MS = 2 * 60 * 60_000;
 const REPEAT_THROTTLE_MS = 2 * 60 * 60_000;
 const LOOSEN_AFTER_MS = 30 * 60_000;
+const RECENT_MS = 24 * 60 * 60_000;
+const RECENT_CAP = 500;
+
+/** One admitted browser turn, kept for a day so a status page can show who used the account. */
+export interface AdmissionTurnRecord {
+  traceId: string;
+  key: string;
+  threadId?: string;
+  model?: string;
+  host?: string;
+  queuedAt: number;
+  startedAt: number;
+  endedAt?: number;
+  error?: string;
+}
+
+export interface AdmissionTurnInfo {
+  threadId?: string;
+  model?: string;
+}
 
 interface AdmissionState {
   version: 1;
@@ -42,13 +62,15 @@ interface AdmissionState {
   lastThrottleAt: number;
   lastAdjustAt: number;
   admitted: number[];
+  recent: AdmissionTurnRecord[];
 }
 
 interface Waiter {
   key: string;
   traceId: string;
   enqueuedAt: number;
-  admit: (release: () => void) => void;
+  info?: AdmissionTurnInfo;
+  admit: (release: (error?: string) => void) => void;
   reject: (error: unknown) => void;
   signal?: AbortSignal;
   onAbort?: () => void;
@@ -83,11 +105,14 @@ export class ChatGptAdmission {
     this.state = this.read();
   }
 
-  /** Resolve with a release function once the turn may run; reject if its signal aborts first. */
-  acquire(key: string, traceId: string, signal?: AbortSignal): Promise<() => void> {
+  /**
+   * Resolve with a release function once the turn may run; reject if its signal aborts first.
+   * Pass the turn's error message to release when it failed, so the status record shows it.
+   */
+  acquire(key: string, traceId: string, signal?: AbortSignal, info?: AdmissionTurnInfo): Promise<(error?: string) => void> {
     if (signal?.aborted) return Promise.reject(new DOMException("ChatGPT web turn aborted", "AbortError"));
     return new Promise((resolve, reject) => {
-      const waiter: Waiter = { key, traceId, enqueuedAt: this.now(), admit: resolve, reject, signal };
+      const waiter: Waiter = { key, traceId, enqueuedAt: this.now(), info, admit: resolve, reject, signal };
       if (signal) {
         waiter.onAbort = () => {
           this.remove(waiter);
@@ -103,6 +128,14 @@ export class ChatGptAdmission {
       this.write();
       this.pump();
     });
+  }
+
+  /** Record which pool host an admitted turn landed on. */
+  noteHost(traceId: string, host: string): void {
+    const record = this.findRecord(traceId);
+    if (!record) return;
+    record.host = host;
+    this.write();
   }
 
   /** The browser saw ChatGPT refuse a prompt for rate: cool down and tighten. */
@@ -145,6 +178,12 @@ export class ChatGptAdmission {
       if (!waiter) break;
       this.running += 1;
       this.state.admitted.push(now);
+      const record: AdmissionTurnRecord = {
+        traceId: waiter.traceId, key: waiter.key, queuedAt: waiter.enqueuedAt, startedAt: now,
+        ...(waiter.info?.threadId ? { threadId: waiter.info.threadId } : {}),
+        ...(waiter.info?.model ? { model: waiter.info.model } : {}),
+      };
+      this.state.recent.push(record);
       this.write();
       if (waiter.signal && waiter.onAbort) waiter.signal.removeEventListener("abort", waiter.onAbort);
       const waited = now - waiter.enqueuedAt;
@@ -152,15 +191,24 @@ export class ChatGptAdmission {
         this.log(`[chatgpt-web] admission turn ${waiter.traceId} admitted after ${Math.round(waited / 1_000)}s`);
       }
       let released = false;
-      waiter.admit(() => {
+      waiter.admit(error => {
         if (released) return;
         released = true;
         this.running -= 1;
+        record.endedAt = this.now();
+        if (error) record.error = error.slice(0, 200);
         this.write();
         this.pump();
       });
     }
     this.schedule();
+  }
+
+  private findRecord(traceId: string): AdmissionTurnRecord | undefined {
+    for (let index = this.state.recent.length - 1; index >= 0; index -= 1) {
+      if (this.state.recent[index]!.traceId === traceId) return this.state.recent[index];
+    }
+    return undefined;
   }
 
   private canAdmit(now: number): boolean {
@@ -232,12 +280,16 @@ export class ChatGptAdmission {
   private prune(now: number): void {
     const cutoff = now - THIRTY_MINUTES;
     while (this.state.admitted.length && this.state.admitted[0]! <= cutoff) this.state.admitted.shift();
+    const recentCutoff = now - RECENT_MS;
+    this.state.recent = this.state.recent
+      .filter(record => record.endedAt === undefined || record.endedAt > recentCutoff)
+      .slice(-RECENT_CAP);
   }
 
   private read(): AdmissionState {
     const fresh: AdmissionState = {
       version: 1, budget: { ...ADMISSION_SEED }, cooldownUntil: 0, cooldownMs: COOLDOWN_MS,
-      lastThrottleAt: 0, lastAdjustAt: this.now(), admitted: [],
+      lastThrottleAt: 0, lastAdjustAt: this.now(), admitted: [], recent: [],
     };
     const path = this.options.statePath;
     if (!path || !existsSync(path)) return fresh;
@@ -255,11 +307,25 @@ export class ChatGptAdmission {
         lastAdjustAt: typeof parsed.lastAdjustAt === "number" ? parsed.lastAdjustAt : this.now(),
         admitted: Array.isArray(parsed.admitted)
           ? parsed.admitted.filter((at): at is number => typeof at === "number").sort((a, b) => a - b) : [],
+        recent: this.readRecent(parsed.recent),
       };
     } catch {
       // A damaged state file must not stop turns; start from the conservative seed.
       return fresh;
     }
+  }
+
+  /** Turns still open when the bridge stopped did not finish; close them as such. */
+  private readRecent(value: unknown): AdmissionTurnRecord[] {
+    if (!Array.isArray(value)) return [];
+    const now = this.now();
+    return value
+      .filter((record): record is AdmissionTurnRecord => Boolean(record) && typeof record === "object"
+        && typeof record.traceId === "string" && typeof record.key === "string"
+        && typeof record.queuedAt === "number" && typeof record.startedAt === "number")
+      .map(record => record.endedAt === undefined ? { ...record, endedAt: now, error: "bridge restarted" } : record)
+      .filter(record => record.endedAt! > now - RECENT_MS)
+      .slice(-RECENT_CAP);
   }
 
   /**
