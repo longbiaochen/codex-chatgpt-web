@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -148,5 +148,24 @@ describe("ChatGPT account admission", () => {
   test("recognizes the browser's throttle message", () => {
     expect(isChatGptRateLimitError(new Error("ChatGPT rate limit: too many requests. Try again in a few minutes."))).toBe(true);
     expect(isChatGptRateLimitError(new Error("ChatGPT stopped responding"))).toBe(false);
+  });
+
+  test("the state file carries a live view of running and queued turns for status pages", async () => {
+    const root = mkdtempSync(join(tmpdir(), "chatgpt-admission-"));
+    roots.push(root);
+    const statePath = join(root, "state.json");
+    const { admission } = harness({ statePath, maxConcurrent: 1 });
+    const holder = await admission.acquire("task-a", "t1");
+    void admission.acquire("task-b", "t2");
+    await settle();
+    let live = JSON.parse(readFileSync(statePath, "utf8")).live;
+    expect(live.running).toBe(1);
+    expect(live.maxConcurrent).toBe(1);
+    expect(live.queued.map((item: { traceId: string }) => item.traceId)).toEqual(["t2"]);
+    holder();
+    await settle();
+    live = JSON.parse(readFileSync(statePath, "utf8")).live;
+    expect(live.queued).toEqual([]);
+    expect(live.running).toBe(1);                                  // t2 took the freed slot
   });
 });

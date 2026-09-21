@@ -100,6 +100,7 @@ export class ChatGptAdmission {
         this.order.push(key);
       }
       this.queues.get(key)!.push(waiter);
+      this.write();
       this.pump();
     });
   }
@@ -155,6 +156,7 @@ export class ChatGptAdmission {
         if (released) return;
         released = true;
         this.running -= 1;
+        this.write();
         this.pump();
       });
     }
@@ -193,6 +195,7 @@ export class ChatGptAdmission {
       const at = this.order.indexOf(waiter.key);
       if (at >= 0) this.order.splice(at, 1);
     }
+    this.write();
   }
 
   /** Wake exactly when budget or the cooldown next frees up, if anyone is waiting. */
@@ -259,10 +262,22 @@ export class ChatGptAdmission {
     }
   }
 
+  /**
+   * Persist learning plus a live view for status pages. `live` is informational only: it is
+   * rebuilt from nothing after a restart and never read back.
+   */
   private write(): void {
     if (!this.options.statePath) return;
+    const live = {
+      running: this.running,
+      maxConcurrent: this.options.maxConcurrent,
+      queued: [...this.queues.values()].flat().map(waiter => ({
+        key: waiter.key, traceId: waiter.traceId, since: waiter.enqueuedAt,
+      })),
+      updatedAt: this.now(),
+    };
     try {
-      atomicWriteFile(this.options.statePath, `${JSON.stringify(this.state)}\n`);
+      atomicWriteFile(this.options.statePath, `${JSON.stringify({ ...this.state, live })}\n`);
     } catch {
       // Losing persistence only resets learning; it must never fail a turn.
     }
