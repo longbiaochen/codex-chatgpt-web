@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { isAbsolute, relative, resolve } from "node:path";
 import { atomicWriteFile } from "../../config";
 import { getCodexHome } from "../../codex-integration-shared";
@@ -137,6 +137,7 @@ function sameAuthority(left: ChatGptTurnEnvironment, right: ChatGptTurnEnvironme
  */
 export class ChatGptThreadEnvironmentStore {
   private loaded = false;
+  private loadedSignature = "";
   private readonly threads = new Map<string, StoredThreadEnvironment>();
 
   constructor(
@@ -277,6 +278,9 @@ export class ChatGptThreadEnvironmentStore {
 
   private get(threadId: string): StoredThreadEnvironment | undefined {
     this.load();
+    // A bridge on another host than Codex cannot read the native rollout, so the Codex host may
+    // write rollout-derived authority into this store while the bridge runs. Pick it up on a miss.
+    if (!this.threads.has(threadId)) this.refresh();
     const stored = this.threads.get(threadId);
     if (!stored) return undefined;
     if (this.now() - stored.updatedAt > THREAD_ENVIRONMENT_TTL_MS) {
@@ -303,26 +307,55 @@ export class ChatGptThreadEnvironmentStore {
     if (this.loaded) return;
     this.loaded = true;
     if (!this.path || !existsSync(this.path)) return;
-    const parsed = JSON.parse(readFileSync(this.path, "utf8")) as Partial<StoredThreadEnvironmentFile>;
+    for (const [threadId, environment] of this.readDisk()) this.threads.set(threadId, environment);
+  }
+
+  /** mtime alone misses two writes within one tick; a rename-based writer also changes the inode. */
+  private signature(): string {
+    const stat = statSync(this.path!);
+    return `${stat.mtimeMs}:${stat.size}:${stat.ino}`;
+  }
+
+  private readDisk(): Array<readonly [string, StoredThreadEnvironment]> {
+    const path = this.path!;
+    this.loadedSignature = this.signature();
+    const parsed = JSON.parse(readFileSync(path, "utf8")) as Partial<StoredThreadEnvironmentFile>;
     const rawThreads = record(parsed.threads);
     if (parsed.version !== 1 || !rawThreads) {
-      throw new Error(`Invalid ChatGPT thread environment store: ${this.path}`);
+      throw new Error(`Invalid ChatGPT thread environment store: ${path}`);
     }
     const cutoff = this.now() - THREAD_ENVIRONMENT_TTL_MS;
-    const entries = Object.entries(rawThreads)
+    return Object.entries(rawThreads)
       .map(([threadId, value]) => [threadId, validateStoredEnvironment(value)] as const)
       .filter(([, environment]) => environment.updatedAt >= cutoff)
       .sort((left, right) => left[1].updatedAt - right[1].updatedAt)
       .slice(-MAX_THREAD_ENVIRONMENTS);
-    for (const [threadId, environment] of entries) this.threads.set(threadId, environment);
+  }
+
+  /** Merge entries another writer added since this store last read or wrote the file. */
+  private refresh(): void {
+    if (!this.path || !existsSync(this.path) || this.signature() === this.loadedSignature) return;
+    for (const [threadId, environment] of this.readDisk()) {
+      const current = this.threads.get(threadId);
+      if (current && current.updatedAt >= environment.updatedAt) continue;
+      this.threads.delete(threadId);
+      this.threads.set(threadId, environment);
+    }
+    const byAge = [...this.threads.entries()].sort((left, right) => left[1].updatedAt - right[1].updatedAt);
+    for (const [threadId] of byAge.slice(0, Math.max(0, byAge.length - MAX_THREAD_ENVIRONMENTS))) {
+      this.threads.delete(threadId);
+    }
   }
 
   private persist(): void {
     if (!this.path) return;
+    // Never drop an entry written by the Codex host between this store's read and this write.
+    this.refresh();
     const payload: StoredThreadEnvironmentFile = {
       version: 1,
       threads: Object.fromEntries(this.threads),
     };
     atomicWriteFile(this.path, `${JSON.stringify(payload, null, 2)}\n`);
+    this.loadedSignature = this.signature();
   }
 }

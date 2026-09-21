@@ -732,6 +732,46 @@ describe("permission_profile sandbox detection (Codex CLI 0.146+)", () => {
 });
 
 describe("trusted Codex task environment continuity", () => {
+  // A bridge on another host than Codex cannot read the native rollout. The Codex host then
+  // writes the rollout-derived authority into the store file while the bridge keeps running.
+  const hostSeed = (statePath: string, threadId: string, updatedAt: number) => {
+    const current = JSON.parse(readFileSync(statePath, "utf8")) as { threads: Record<string, unknown> };
+    current.threads[threadId] = {
+      cwd: root, roots: [root], writableRoots: [root], sandboxPolicy: { type: "dangerFullAccess" }, updatedAt,
+    };
+    writeFileSync(statePath, JSON.stringify({ version: 1, threads: current.threads }));
+  };
+  const followUp = (threadId: string): CodexParsedRequest => {
+    const next = currentWire();
+    next._rawBody = {
+      client_metadata: { "x-codex-turn-metadata": JSON.stringify({ thread_id: threadId, turn_id: "turn_x" }) },
+      input: [{ type: "message", role: "user", content: [{ type: "input_text", text: "Continue" }] }],
+    };
+    return next;
+  };
+
+  test("a running store picks up authority the Codex host wrote after it loaded", () => {
+    const stateRoot = mkdtempSync(join(tmpdir(), "codex-chatgpt-thread-environment-"));
+    temporaryRoots.push(stateRoot);
+    const statePath = join(stateRoot, "thread-environments.json");
+    const store = new ChatGptThreadEnvironmentStore(statePath);
+    store.resolve(currentWire());                        // loads and writes thread_current
+    expect(() => store.resolve(followUp("thread_seeded"))).toThrow("missing cwd");
+    hostSeed(statePath, "thread_seeded", Date.now());
+    expect(store.resolve(followUp("thread_seeded")).cwd).toBe(root);
+  });
+
+  test("the store's own write keeps an entry the Codex host added meanwhile", () => {
+    const stateRoot = mkdtempSync(join(tmpdir(), "codex-chatgpt-thread-environment-"));
+    temporaryRoots.push(stateRoot);
+    const statePath = join(stateRoot, "thread-environments.json");
+    const store = new ChatGptThreadEnvironmentStore(statePath);
+    store.resolve(currentWire());
+    hostSeed(statePath, "thread_seeded", Date.now());
+    store.resolve(currentWire());                        // persists thread_current again
+    expect(readFileSync(statePath, "utf8")).toContain('"thread_seeded"');
+  });
+
   test("persists the trusted first-turn authority and refreshes tools from every follow-up", () => {
     const stateRoot = mkdtempSync(join(tmpdir(), "codex-chatgpt-thread-environment-"));
     temporaryRoots.push(stateRoot);
