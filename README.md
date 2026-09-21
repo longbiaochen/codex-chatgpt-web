@@ -1,3 +1,14 @@
+> ### This is a fork
+>
+> Upstream: **[miuuyy/codex-chatgpt-web](https://github.com/miuuyy/codex-chatgpt-web)** — if you want the original, go there. It is the one with installers, releases for every platform, and support.
+>
+> This fork exists for one deployment upstream explicitly does not support: **the bridge running on a different machine than Codex**, serving several launcher browsers at once. Everything here is built for that shape, and several patches were declined upstream for exactly that reason.
+>
+> - **What is different:** [What this fork changes](#what-this-fork-changes)
+> - **Releases:** tagged `mars-vX.Y.Z` (upstream uses `vX.Y.Z`). Latest: **[mars-v1.0.0](https://github.com/longbiaochen/codex-chatgpt-web/releases/tag/mars-v1.0.0)**, based on upstream v5.0.8.
+> - **No installers here.** Releases ship only the two runtime bundles (`cli.js`, `browser-helper.cjs`). Install the app from upstream, then swap those two files in.
+> - Changes are offered upstream when they are not specific to this deployment; the rest stays on the `mars-5.0.8` branch.
+
 <p align="center">
   <img src="assets/readme/hero.svg" width="960" alt="Switch to web models. Stay in Codex. Your ChatGPT plan. Your workflow. Maximum capabilities.">
 </p>
@@ -29,6 +40,36 @@ Use the ChatGPT Web models available on your account, including Pro, from Codex�
 Full harness mode connects ChatGPT to the current task’s files, terminal, tools, and approvals through MCP. Conversations stay tied to your Codex task, so you can keep working as the context grows.
 
 <div id="get-started"><a id="quick-start"></a></div>
+
+## What this fork changes
+
+Based on upstream **v5.0.8**. One bridge process serves several launcher browsers, each with its own ChatGPT connector and tunnel.
+
+### Architecture
+
+| Change | Why |
+| --- | --- |
+| **Browser host pool** — one bridge, several launcher browsers; turns go to the host with the fewest in flight, and a retained conversation stays on the launcher owning its tab | A renderer busy ingesting a large prompt used to stall CDP attach and rebinding for every other turn in the same Chromium |
+| **Per-host connector names** — each pool browser mentions its own connector, so each has its own tunnel | OpenAI dispatches one tool call at a time per tunnel; without this, concurrent turns queue behind each other |
+| **Host failover** — the primary launcher is validated like any pool member, and the browser helper starts from whichever launcher is alive | Stopping the primary used to fail every turn, even with live pool members |
+| **`CODEX_WEB_GPT_BROWSER_HOST_ONLY=1`** — a launcher that hosts the browser but hides the install step, the Codex restart notice and the MCP entry points | A pool host has no config of its own; the setup wizard it showed could only ever fail |
+
+### Fixes
+
+- **Environment after a compaction** — a compacted turn either puts the summary between the envelope and the instruction, or makes the envelope message itself the last item. Both left every following turn failing with `missing cwd in trusted Codex environment context`.
+- **Remote-bridge visualization roots** — accept the client-side `.codex/visualizations/YYYY/MM/DD/<thread>` layout, which a bridge on another host cannot verify against its own Codex home.
+- **Same-thread environment reuse** — historical envelopes no longer block a thread's already-trusted authority.
+- **Rebind and probe reliability** — retry a timed-out same-page rebind; do not rebind a stalled DOM probe while broker activity proves the turn is alive; bound per-page ownership inspection.
+- **Abandoned turns** — retire browser turns whose tool batch Codex never answered instead of heartbeating forever.
+- **Diagnostics** — a structured `environment_rejected` line naming which branch refused a turn, plus launcher connect timings and renderer CPU before a rebind. The compaction bugs above were only findable because of it.
+
+Commit-level detail is in the [release notes](https://github.com/longbiaochen/codex-chatgpt-web/releases/tag/mars-v1.0.0).
+
+### Status
+
+Runs in production on one host: 3 rounds x 3 concurrent turns, 9/9, zero rebinds, zero rate limiting. `bun test`: 1050 pass, plus 2 launcher-localization flakes that also fail on a clean upstream checkout.
+
+Not packaged, not supported, and not tested on Windows or macOS — it is a Linux deployment that happens to be useful to publish. Issues and PRs about the pool are welcome; anything about the app itself belongs upstream.
 
 ## Get started
 
