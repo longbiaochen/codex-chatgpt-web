@@ -5,6 +5,8 @@ import { basename, dirname, join } from "node:path";
 import { createInterface } from "node:readline";
 import { notifyLauncherTurn } from "../../launcher-browser-host";
 import { ChatGptCompactionHandoffAccepted, ChatGptWebAdapterError } from "./adapter-error";
+import { ChatGptAdmission, isChatGptRateLimitError } from "./admission";
+import { getConfigDir } from "../../config";
 import type { CompiledChatGptWebPrompt } from "./prompt";
 import type { BrowserTurn, ResolvedBrowserConfig } from "./browser-worker";
 import {
@@ -182,6 +184,21 @@ function parseHelperMessage(line: string): HelperMessage {
   throw new Error("Launcher browser helper emitted an unknown message type");
 }
 
+let admissionSingleton: ChatGptAdmission | undefined;
+
+/**
+ * One admission gate per bridge process: the account, not a client instance, is what throttles.
+ * CODEX_CHATGPT_WEB_ADMISSION=off bypasses it without a rollback; tests never persist its state.
+ */
+function sharedAdmission(config: ResolvedBrowserConfig): ChatGptAdmission | undefined {
+  if (process.env.CODEX_CHATGPT_WEB_ADMISSION === "off") return undefined;
+  admissionSingleton ??= new ChatGptAdmission({
+    ...(process.env.NODE_ENV === "test" ? {} : { statePath: join(getConfigDir(), "runtime", "chatgpt-admission.json") }),
+    maxConcurrent: 1 + (config.browserHostPool?.length ?? 0),
+  });
+  return admissionSingleton;
+}
+
 export class LauncherBrowserHelperClient {
   private child?: ChildProcessWithoutNullStreams;
   private ready?: Promise<void>;
@@ -230,6 +247,21 @@ export class LauncherBrowserHelperClient {
         "Launcher browser helper does not support the MCP completion fence; update or restart the launcher",
       );
     }
+    // Every pool host drives the same ChatGPT account; pace the account before picking a host.
+    const admission = sharedAdmission(this.config);
+    if (!admission) return await this.runAdmitted(turn);
+    const release = await admission.acquire(turn.conversationKey ?? turn.traceId, turn.traceId, turn.abortSignal);
+    try {
+      return await this.runAdmitted(turn);
+    } catch (error) {
+      if (isChatGptRateLimitError(error)) admission.noteThrottle();
+      throw error;
+    } finally {
+      release();
+    }
+  }
+
+  private async runAdmitted(turn: BrowserTurn): Promise<string> {
     return await new Promise<string>((resolveResult, rejectResult) => {
         if (this.pending.has(turn.traceId)) {
           rejectResult(new Error(`Duplicate launcher browser turn: ${turn.traceId}`));
