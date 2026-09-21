@@ -37,6 +37,7 @@ import {
 } from "./chatgpt-web-models";
 import { forwardNativeCodexRequest, type NativeFetch, type NativeImageEndpoint } from "./native-passthrough";
 import { fetchNativeCodex } from "./native-network";
+import { NativeWebSocketRelay, type NativeWebSocketRelayOptions, type RelayData } from "./native-websocket";
 import {
   buildCompactV1Output,
   COMPACT_PROMPT,
@@ -790,7 +791,11 @@ export async function compactRequest(
 
 export function startServer(
   config: AppConfig,
-  dependencies: { fetchUpstream?: NativeFetch; adapterFactory?: ChatGptWebAdapterFactory } = {},
+  dependencies: {
+    fetchUpstream?: NativeFetch;
+    adapterFactory?: ChatGptWebAdapterFactory;
+    nativeWebSocket?: NativeWebSocketRelayOptions;
+  } = {},
 ): ReturnType<typeof Bun.serve> {
   if (config.purpose === "dev-harness") {
     throw new Error("DEV harness configuration cannot start a Responses listener");
@@ -813,6 +818,7 @@ export function startServer(
     request: number; at: string; status: number; failure?: ModelCatalogFailure;
   } | null = null;
   const httpTurns = new HttpTurnCounter();
+  const nativeWebSocket = new NativeWebSocketRelay(dependencies.nativeWebSocket);
   const activity = () => ({
     active_http_turns: httpTurns.count(),
     active_browser_turns: chatGptTurnSessions.activeCount() + (turnBroker?.externalOwnerActiveCount() ?? 0),
@@ -823,11 +829,12 @@ export function startServer(
     const actual = Buffer.from(header);
     return actual.length === expected.length && timingSafeEqual(actual, expected);
   };
-  const server = Bun.serve({
+  const server = Bun.serve<RelayData, never>({
     hostname: config.host,
     port: config.port,
     idleTimeout: 0,
-    async fetch(req) {
+    websocket: nativeWebSocket.handlers,
+    async fetch(req, bunServer) {
       const url = new URL(req.url);
       if (req.method === "GET" && url.pathname === "/healthz") {
         return Response.json({
@@ -1035,6 +1042,10 @@ export function startServer(
         }, req.signal, process.platform, "models");
       }
       if (req.method === "GET" && url.pathname === "/v1/responses") {
+        // Native models relay over WebSocket; ChatGPT Web models and anything else get 426 → HTTP.
+        if (!draining && req.headers.get("upgrade")?.toLowerCase() === "websocket") {
+          return await nativeWebSocket.upgrade(req, bunServer);
+        }
         return new Response("Responses WebSocket transport is not enabled on this local route", {
           status: 426,
           headers: { "content-type": "text/plain; charset=utf-8" },
