@@ -26,7 +26,34 @@ export function nativeProxyFromPac(value: unknown): string | undefined {
 
 const PROXY_ENV = ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy"];
 
+const HOST_RESTART_WAIT_MS = 15_000;
+const HOST_RESTART_POLL_MS = 500;
+
+/**
+ * The browser host restarts with the bridge (systemd PartOf), so for a few seconds after a bridge
+ * restart its descriptor names a dead pid or its control port refuses connections. Wait for it
+ * instead of failing every native request (and declining every WebSocket) in that window.
+ */
+function hostRestarting(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  const code = error && typeof error === "object" && "code" in error ? String(error.code) : "";
+  return /descriptor is missing|process is not running/.test(message)
+    || code === "ConnectionRefused" || code === "ECONNREFUSED";
+}
+
 async function launcherProxyFor(descriptorPath: string, url: string, signal?: AbortSignal): Promise<string | undefined> {
+  const deadline = Date.now() + HOST_RESTART_WAIT_MS;
+  for (;;) {
+    try {
+      return await launcherProxyOnce(descriptorPath, url, signal);
+    } catch (error) {
+      if (!hostRestarting(error) || Date.now() >= deadline || signal?.aborted) throw error;
+      await Bun.sleep(HOST_RESTART_POLL_MS);
+    }
+  }
+}
+
+async function launcherProxyOnce(descriptorPath: string, url: string, signal?: AbortSignal): Promise<string | undefined> {
   const descriptor = readLauncherBrowserHostDescriptor(descriptorPath);
   const response = await fetch(`${descriptor.control.endpoint}/v1/network/resolve-proxy`, {
     method: "POST",

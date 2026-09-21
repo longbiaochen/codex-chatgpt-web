@@ -1017,6 +1017,8 @@ export function startServer(
           const started = Date.now();
           let failureDetail: string | undefined;
           const recordResult = (response: Response, failure?: ModelCatalogFailure): Response => {
+            // The client hung up first (Codex drops superseded catalog refreshes): nothing failed here.
+            if (!response.ok && req.signal.aborted) return response;
             const result = { request, at: new Date().toISOString(), status: response.status, ...(failure ? { failure } : {}) };
             // An older, slower request must not replace a newer completed result.
             if (!lastModelCatalogResult || request > lastModelCatalogResult.request) lastModelCatalogResult = result;

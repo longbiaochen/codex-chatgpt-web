@@ -100,3 +100,32 @@ test("native fetch reaches a proxy-only target, refreshes routing, and never ret
     rmSync(root, { recursive: true, force: true });
   }
 }, 15_000);
+
+test("native proxy resolution waits for a browser host that is restarting with the bridge", async () => {
+  for (const key of envKeys) delete process.env[key];
+  const root = mkdtempSync(join(tmpdir(), "native-network-"));
+  const token = "launcher-control-token-0123456789abcdefghijklmnop";
+  const control = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => Response.json({ proxy: "DIRECT" }) });
+  const upstream = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response("ok") });
+  const descriptor = join(root, "launcher.json");
+  const write = (pid: number) => writeFileSync(descriptor, JSON.stringify({
+    version: 3, kind: "codex-web-gpt-launcher", profile: "production", pid,
+    endpoint: "http://127.0.0.1:39110", control: { endpoint: control.url.origin, token },
+    helper: { executable: process.execPath, script: import.meta.path },
+    partition: "persist:codex-web-gpt-chatgpt", idleUrl: LAUNCHER_BROWSER_IDLE_URL,
+    surfaceId: "launcher_surface_id_0123456789AB", surfaceTargets: {}, createdAt: new Date().toISOString(),
+  }), { mode: 0o600 });
+  write(2_147_483_000);                                   // a pid that is not running: host restarting
+  process.env.CODEX_CHATGPT_WEB_BROWSER_HOST_DESCRIPTOR = descriptor;
+  try {
+    const started = Date.now();
+    setTimeout(() => write(process.pid), 1_200);          // the host comes back
+    const response = await fetchNativeCodex(new Request(upstream.url, { signal: AbortSignal.timeout(10_000) }));
+    expect(await response.text()).toBe("ok");
+    expect(Date.now() - started).toBeGreaterThanOrEqual(1_000);
+  } finally {
+    control.stop(true);
+    upstream.stop(true);
+    rmSync(root, { recursive: true, force: true });
+  }
+});
